@@ -39,6 +39,7 @@ import java.util.regex.Pattern;
  * Troupe's server API, as global modules (see the prelude for the player methods):
  * <pre>
  * players.list()  players.get(id|name)  players.on_join(fn(player))  players.on_leave(fn(player))
+ *   (on_join also runs for every player already online when the resource starts or restarts)
  *   player:message(text)  player:pos()  player:teleport(x, y, z, dim?)  player:give(item, count?)  player:online()
  * chat.broadcast(text)  chat.on_message(fn(player, text))
  * command.register(name, fn(player|nil, args), { admin = false })
@@ -97,6 +98,14 @@ final class ServerApi {
                     return player(a).addItem(new ItemStack(item, (int) count));
                 })
                 .event("join").event("leave");
+
+        // A resource that (re)starts with players online gets on_join for each of them, as if they had just joined:
+        // its per-player state starts empty, and scripts set it up in one place.
+        host.onStart(resource -> {
+            MinecraftServer s = server.get();
+            if (s == null) return;
+            for (ServerPlayer p : s.getPlayerList().getPlayers()) modules.emitTo(resource, players, "join", peer(p));
+        });
 
         chat = modules.global("chat")
                 .function("broadcast", a -> {

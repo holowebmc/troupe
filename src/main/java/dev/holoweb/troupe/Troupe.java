@@ -59,8 +59,16 @@ public final class Troupe implements ModInitializer {
     });
     private static final Links links = new Links(host);
     private static final ServerApi api = new ServerApi(host.modules(), host, () -> server);
+    /** Every resource on disk (last scan). */
     private static volatile ServerResources resources = ServerResources.EMPTY;
+    /** What clients run: the running resources with client files, with their generations. */
+    private static volatile ServerResources published = ServerResources.EMPTY;
     private static final Map<ServerConfigurationPacketListenerImpl, ServerSync> syncs = new ConcurrentHashMap<>();
+    /** What each player got during configuration, to catch up if it changed before they reached play. */
+    private static final Map<java.util.UUID, ServerResources> configured = new ConcurrentHashMap<>();
+    /** -Dtroupe.dev=true: watch resources/ and restart what changes on disk. */
+    private static final boolean DEV = Boolean.getBoolean("troupe.dev");
+    private static Map<String, Long> devStamps;
 
     @Override
     public void onInitialize() {
@@ -75,17 +83,23 @@ public final class Troupe implements ModInitializer {
             server = s;
             rescan(s);
         });
-        ServerLifecycleEvents.SERVER_STARTED.register(s -> host.startAll());
+        ServerLifecycleEvents.SERVER_STARTED.register(s -> {
+            host.startAll();
+            publish();
+            if (DEV) LOG.info("Dev mode: resources restart when their files change");
+        });
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> host.stopAll());
         ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
         ServerTickEvents.END_SERVER_TICK.register(s -> {
             host.tick();
             api.tick();
+            if (DEV && s.getTickCount() % 20 == 0) devCheck(s);
         });
         CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) -> dispatcher.register(command()));
 
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
-            ServerResources current = resources;
+            ServerResources current = published;
+            configured.put(handler.getOwner().id(), current);
             if (current.manifest().resources().isEmpty()) return;
             if (!ServerConfigurationNetworking.canSend(handler, TroupePayload.TYPE)) {
                 handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
@@ -106,7 +120,7 @@ public final class Troupe implements ModInitializer {
                     syncs.remove(handler).close();
                     ctx.server().execute(() -> handler.completeTask(SyncTask.TYPE));
                 }
-            } catch (ProtocolException e) {
+            } catch (IOException e) {
                 LOG.warn("Troupe protocol error from {}: {}", handler.getOwner().name(), e.getMessage());
                 handler.disconnect(Component.literal("Troupe: " + e.getMessage()));
             }
@@ -120,8 +134,13 @@ public final class Troupe implements ModInitializer {
         // Play phase: one Link per player with Troupe. Play receivers run on the server thread.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
             ServerPlayer player = handler.player;
-            if (ServerPlayNetworking.canSend(player, TroupePayload.TYPE))
-                links.add(new Link(host, ServerApi.peer(player), bytes -> ServerPlayNetworking.send(player, new TroupePayload(bytes))));
+            ServerResources got = configured.remove(player.getUUID());
+            if (ServerPlayNetworking.canSend(player, TroupePayload.TYPE)) {
+                Link link = new Link(host, ServerApi.peer(player), out(ServerPlayNetworking.getSender(player)));
+                links.add(link);
+                ServerResources now = published;
+                if (!now.manifest().equals((got == null ? ServerResources.EMPTY : got).manifest())) link.push(now);
+            }
             api.joined(player); // queued: runs after START went out, so state set by players.on_join reaches the client
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
@@ -134,7 +153,7 @@ public final class Troupe implements ModInitializer {
             if (link == null) return;
             try {
                 link.receive(payload.data());
-            } catch (ProtocolException e) {
+            } catch (IOException e) {
                 LOG.warn("Troupe protocol error from {}: {}", ctx.player().getGameProfile().name(), e.getMessage());
                 ctx.player().connection.disconnect(Component.literal("Troupe: " + e.getMessage()));
             }
@@ -167,17 +186,45 @@ public final class Troupe implements ModInitializer {
             LOG.error("Could not read the resources folder", e);
             resources = ServerResources.EMPTY;
         }
-        Map<String, ResourceHost.Entry> entries = new TreeMap<>();
-        for (ResourceInfo info : resources.infos().values()) {
-            Path dir = resources.root().resolve(info.name());
-            // Paths come from LuaRuntime's require, which only builds server/... and shared/... names.
-            entries.put(info.name(), new ResourceHost.Entry(info, path -> {
-                Path file = dir.resolve(path);
-                return Files.isRegularFile(file) ? Files.readAllBytes(file) : null;
-            }));
-        }
+        Map<String, ResourceHost.Entry> entries = ResourceHost.entries(resources);
         host.setAvailable(entries);
         LOG.info("{} resources, {} with client files: {}", entries.size(), resources.manifest().resources().size(), entries.keySet());
+    }
+
+    /** Tells connected clients when what runs changed (started, stopped, restarted). */
+    private static void publish() {
+        ServerResources now = resources.only(host.running());
+        if (now.manifest().equals(published.manifest())) return;
+        published = now;
+        links.push(now);
+    }
+
+    /** Dev mode, once a second: a resource whose files changed restarts; a new one starts; a deleted one stops. */
+    private static void devCheck(MinecraftServer s) {
+        Map<String, Long> now = ServerResources.stamps(s.getServerDirectory().resolve("resources"));
+        Map<String, Long> before = devStamps;
+        devStamps = now;
+        if (before == null || before.equals(now)) return;
+        rescan(s);
+        java.util.Set<String> names = new java.util.TreeSet<>(now.keySet());
+        names.addAll(before.keySet());
+        for (String name : names) {
+            if (java.util.Objects.equals(before.get(name), now.get(name))) continue;
+            try {
+                if (!now.containsKey(name) || !host.available().contains(name)) {
+                    if (!host.stop(name).isEmpty()) LOG.info("Dev: stopped {}", name);
+                } else if (host.isRunning(name)) {
+                    host.restart(name);
+                    LOG.info("Dev: restarted {}", name);
+                } else {
+                    host.start(name);
+                    LOG.info("Dev: started {}", name);
+                }
+            } catch (ResourceException e) {
+                LOG.error("Dev: {} failed: {}", name, e.getMessage());
+            }
+        }
+        publish();
     }
 
     private interface Action {
@@ -205,7 +252,7 @@ public final class Troupe implements ModInitializer {
                 }));
     }
 
-    /** Every action rescans first, so edits on disk and new resources are picked up. Clients get them on their next join. */
+    /** Every action rescans first, so edits on disk and new resources are picked up; connected clients follow. */
     private static LiteralArgumentBuilder<CommandSourceStack> action(String verb, Action action) {
         return Commands.literal(verb).then(Commands.argument("resource", StringArgumentType.word())
                 .suggests((c, builder) -> SharedSuggestionProvider.suggest(host.available(), builder))
@@ -220,9 +267,24 @@ public final class Troupe implements ModInitializer {
         } catch (ResourceException e) {
             c.getSource().sendFailure(Component.literal(e.getMessage()));
             return 0;
+        } finally {
+            publish();
         }
         c.getSource().sendSuccess(() -> Component.literal(verb + " " + name + ": ok"), true);
         return 1;
+    }
+
+    private static Link.Out out(PacketSender packets) {
+        ServerSync.Sender s = sender(packets);
+        return new Link.Out() {
+            public void send(byte[] message, Runnable onSent) {
+                s.send(message, onSent);
+            }
+
+            public void disconnect(String reason) {
+                s.disconnect(reason);
+            }
+        };
     }
 
     private static ServerSync.Sender sender(PacketSender packets) {

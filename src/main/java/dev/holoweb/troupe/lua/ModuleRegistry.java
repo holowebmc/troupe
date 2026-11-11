@@ -51,6 +51,16 @@ public final class ModuleRegistry implements Modules {
         return modules.values().stream().filter(m -> m.global).toList();
     }
 
+    /** Delivers a module event to one resource only (e.g. players.join for players already online when it starts). */
+    public void emitTo(String resource, Module module, String event, Object... args) {
+        ModuleImpl m = (ModuleImpl) module;
+        if (!m.events.contains(event)) throw new IllegalArgumentException("module '" + m.name + "' has no event '" + event + "'");
+        Object[] copy = args.clone();
+        executor.execute(() -> {
+            for (LuaRuntime r : running.get()) if (r.name().equals(resource)) r.dispatch(m.name, event, copy);
+        });
+    }
+
     ModuleImpl find(String name) {
         return modules.get(name);
     }

@@ -76,7 +76,16 @@ public final class TroupeClient implements ClientModInitializer {
         // INIT comes before any play packet, and its task is queued ahead of their handling on the render thread.
         // The resources start when the server says START (after it sent the global state).
         ClientPlayConnectionEvents.INIT.register((handler, client) -> client.execute(() -> {
-            link = new Link(host, bytes -> ClientPlayNetworking.send(new TroupePayload(bytes)), TroupeClient::startResources);
+            link = new Link(host, new Link.Out() {
+                public void send(byte[] message, Runnable onSent) {
+                    ClientPlayNetworking.send(new TroupePayload(message));
+                    if (onSent != null) onSent.run();
+                }
+
+                public void disconnect(String reason) {
+                    handler.getConnection().disconnect(Component.literal(reason));
+                }
+            }, TroupeClient::startResources, CACHE, TroupeClient::applyManifest);
             host.setNetwork(link);
         }));
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
@@ -104,22 +113,14 @@ public final class TroupeClient implements ClientModInitializer {
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */
     private static void startResources() {
         Manifest m = manifest;
-        Map<String, ResourceHost.Entry> entries = new TreeMap<>();
-        m.resources().forEach((name, files) -> {
-            try {
-                ResourceInfo info = ResourceInfo.parse(name, new String(read(m, files, Protocol.RESOURCE_JSON), StandardCharsets.UTF_8));
-                entries.put(name, new ResourceHost.Entry(info, path -> read(m, files, path)));
-            } catch (IOException e) {
-                Troupe.LOG.error("Resource {}: {}", name, e.getMessage());
-            }
-        });
-        host.setAvailable(entries);
-        host.startAll();
+        host.apply(ResourceHost.entries(m, CACHE), m.generations());
     }
 
-    private static byte[] read(Manifest m, Map<String, Integer> files, String path) throws IOException {
-        Integer blob = files.get(path);
-        return blob == null ? null : Files.readAllBytes(CACHE.resolve(m.blobs().get(blob).sha256()));
+    /** The server's running resources changed while we're in the world; the files are in the cache already. */
+    private static void applyManifest(Manifest m) {
+        Troupe.LOG.info("Server resources changed: {}", m.generations());
+        manifest = m;
+        host.apply(ResourceHost.entries(m, CACHE), m.generations());
     }
 
     private static void reset() {

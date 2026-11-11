@@ -31,6 +31,11 @@ public final class Links implements Network {
         host.playerLeft(playerId);
     }
 
+    /** The running resources changed: every player downloads what they lack and restarts what changed. */
+    public void push(dev.holoweb.troupe.net.ServerResources pack) {
+        for (Link l : List.copyOf(byPlayer.values())) l.push(pack);
+    }
+
     @Override
     public void emit(String resource, String player, String name, String json) {
         if (player == null) {

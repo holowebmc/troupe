@@ -1,8 +1,13 @@
 package dev.holoweb.troupe.lua;
 
+import dev.holoweb.troupe.net.ClientSync;
 import dev.holoweb.troupe.net.Protocol;
 import dev.holoweb.troupe.net.ProtocolException;
+import dev.holoweb.troupe.net.ServerResources;
+import dev.holoweb.troupe.net.ServerSync;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -10,17 +15,30 @@ import java.util.function.Consumer;
 /**
  * One end of a play-phase connection: encodes what the host sends, decodes what arrives and hands it to the host.
  * On the server there is one per player ({@code peer} set); on the client one for the server ({@code peer} null).
- * Game thread only.
+ * When the server's running resources change, it {@link #push}es the new manifest and the client downloads what it
+ * lacks with the same messages as during configuration. Game thread only.
  */
 public final class Link implements Network {
     /** Messages a client may send per second on average, and in one burst. */
     static final double RATE = 20, BURST = 40;
     private static final String DISCONNECTED = Json.encode("disconnected");
 
+    /** Sends one message; {@code onSent} (may be null) runs once it's written, on any thread. */
+    public interface Out {
+        void send(byte[] message, Runnable onSent);
+
+        void disconnect(String reason);
+    }
+
     private final ResourceHost host;
     private final Peer peer;
-    private final Consumer<byte[]> out;
+    private final Out out;
     private final Runnable onStart;
+    private final Path cache;
+    private final Consumer<Protocol.Manifest> onManifest;
+    private ServerSync serverSync;
+    private ServerResources nextPush;
+    private ClientSync clientSync;
     private final Map<Integer, Reply> pending = new HashMap<>();
     private int nextId;
     private double tokens = BURST;
@@ -29,20 +47,25 @@ public final class Link implements Network {
     private boolean closed;
 
     /** Server side: one per player. */
-    public Link(ResourceHost host, Peer peer, Consumer<byte[]> out) {
-        this(host, peer, out, () -> {});
+    public Link(ResourceHost host, Peer peer, Out out) {
+        this(host, peer, out, () -> {}, null, m -> {});
     }
 
-    /** Client side: {@code onStart} runs when the server says its state is here and resources may start. */
-    public Link(ResourceHost host, Consumer<byte[]> out, Runnable onStart) {
-        this(host, null, out, onStart);
+    /**
+     * Client side: {@code onStart} runs when the server says its state is here and resources may start;
+     * {@code onManifest} when a pushed manifest is fully in {@code cache}.
+     */
+    public Link(ResourceHost host, Out out, Runnable onStart, Path cache, Consumer<Protocol.Manifest> onManifest) {
+        this(host, null, out, onStart, cache, onManifest);
     }
 
-    private Link(ResourceHost host, Peer peer, Consumer<byte[]> out, Runnable onStart) {
+    private Link(ResourceHost host, Peer peer, Out out, Runnable onStart, Path cache, Consumer<Protocol.Manifest> onManifest) {
         this.host = host;
         this.peer = peer;
         this.out = out;
         this.onStart = onStart;
+        this.cache = cache;
+        this.onManifest = onManifest;
         lastRefill = host.now();
     }
 
@@ -81,18 +104,60 @@ public final class Link implements Network {
         send(new Protocol.Out(Protocol.START));
     }
 
+    /** Server: the client should run {@code pack} now. One download at a time; a newer push waits for it. */
+    public void push(ServerResources pack) {
+        if (closed) return;
+        if (serverSync != null) {
+            nextPush = pack;
+            return;
+        }
+        serverSync = new ServerSync(pack, new ServerSync.Sender() {
+            public void send(byte[] message, Runnable onSent) {
+                if (!closed) out.send(message, onSent);
+            }
+
+            public void disconnect(String reason) {
+                out.disconnect(reason);
+            }
+        });
+        serverSync.start();
+    }
+
     private void send(Protocol.Out message) {
-        if (!closed) out.accept(message.toByteArray());
+        if (!closed) out.send(message.toByteArray(), null);
     }
 
     /** A message from the other end. Server side: rate-limited, and everything in it is untrusted. */
-    public void receive(byte[] message) throws ProtocolException {
+    public void receive(byte[] message) throws IOException {
         if (closed) return;
         boolean fromClient = peer != null;
         int max = fromClient ? Protocol.MAX_JSON_TO_SERVER : Protocol.MAX_JSON_TO_CLIENT;
         Protocol.In in = new Protocol.In(message);
         int type = in.type();
         switch (type) {
+            // ids 0 and 1: a pushed download (MANIFEST/CHUNK to the client, WANT/READY to the server)
+            case Protocol.MANIFEST, Protocol.CHUNK -> {
+                if (fromClient) {
+                    if (serverSync == null) throw new ProtocolException("no download in progress");
+                    if (serverSync.receive(message)) {
+                        serverSync.close();
+                        serverSync = null;
+                        ServerResources next = nextPush;
+                        nextPush = null;
+                        if (next != null) push(next);
+                    }
+                } else {
+                    if (clientSync == null) {
+                        if (type != Protocol.MANIFEST) throw new ProtocolException("CHUNK before MANIFEST");
+                        clientSync = new ClientSync(cache, bytes -> out.send(bytes, null));
+                    }
+                    Protocol.Manifest done = clientSync.receive(message);
+                    if (done != null) {
+                        clientSync = null;
+                        onManifest.accept(done);
+                    }
+                }
+            }
             case Protocol.EVENT -> {
                 String resource = in.string(), name = in.string(), json = in.text(max);
                 in.end();
@@ -152,10 +217,12 @@ public final class Link implements Network {
         return false;
     }
 
-    /** The connection is gone: pending calls fail. */
+    /** The connection is gone: pending calls fail, downloads stop. */
     public void close() {
         if (closed) return;
         closed = true;
+        if (serverSync != null) serverSync.close();
+        if (clientSync != null) clientSync.close();
         for (Reply r : pending.values()) r.reply(false, DISCONNECTED);
         pending.clear();
     }

@@ -49,8 +49,11 @@ public final class ResourceHost {
     private Network network = Network.NONE;
     private UiBackend ui;
     private final List<java.util.function.Consumer<String>> stopListeners = new ArrayList<>();
+    private final List<java.util.function.Consumer<String>> startListeners = new ArrayList<>();
     private Map<String, Entry> available = Map.of();
     private final LinkedHashMap<String, Running> running = new LinkedHashMap<>();
+    /** Server: bumps on every start, so clients can tell a restart. Client: what the server last said. */
+    private final Map<String, Integer> generations = new HashMap<>();
     // resource → key → json. On the client the player map has a single player, "".
     private final Map<String, Map<String, String>> globalState = new HashMap<>();
     private final Map<String, Map<String, Map<String, String>>> playerState = new HashMap<>();
@@ -95,6 +98,11 @@ public final class ResourceHost {
     /** Built-in modules hear when a resource stops, to drop what it registered (commands...). */
     public void onStop(java.util.function.Consumer<String> listener) {
         stopListeners.add(listener);
+    }
+
+    /** Built-in modules hear when a resource has started (its main.lua ran up to its first wait). */
+    public void onStart(java.util.function.Consumer<String> listener) {
+        startListeners.add(listener);
     }
 
     UiBackend ui() {
@@ -152,6 +160,7 @@ public final class ResourceHost {
             throw new ResourceException(name + ": " + Values.readable(e.getMessage()));
         }
         running.put(name, new Running(entry, runtime)); // before main.lua: its handlers may fire right away
+        if (side == Side.SERVER) generations.merge(name, 1, Integer::sum);
         try {
             runtime.start();
         } catch (LuaError e) {
@@ -159,6 +168,7 @@ public final class ResourceHost {
             throw new ResourceException(Values.readable(e.getMessage()));
         }
         LuaRuntime.LOG.info("Started {} ({})", name, side.name().toLowerCase());
+        for (var l : startListeners) l.accept(name);
     }
 
     /** Stops the resource and, first, every running resource that depends on it. Returns what stopped, in order. */
@@ -201,6 +211,58 @@ public final class ResourceHost {
 
     public void stopAll() {
         for (String name : List.copyOf(running.keySet()).reversed()) stop(name);
+    }
+
+    /** Server: running resources and their generation (what clients are told to run). */
+    public Map<String, Integer> running() {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (String name : running.keySet()) out.put(name, generations.getOrDefault(name, 0));
+        return out;
+    }
+
+    /**
+     * Client: the server's running resources changed. Stops what's gone and what restarted there (a new generation),
+     * with their dependents, then starts everything that isn't running.
+     */
+    public void apply(Map<String, Entry> entries, Map<String, Integer> serverGenerations) {
+        for (String name : List.copyOf(running.keySet()).reversed())
+            if (!entries.containsKey(name) || !serverGenerations.getOrDefault(name, 0).equals(generations.getOrDefault(name, 0))) stop(name);
+        generations.clear();
+        generations.putAll(serverGenerations);
+        setAvailable(entries);
+        startAll();
+    }
+
+    /** Server: every scanned resource, its files read from disk (require only builds server/... and shared/... paths). */
+    public static Map<String, Entry> entries(dev.holoweb.troupe.net.ServerResources resources) {
+        Map<String, Entry> entries = new TreeMap<>();
+        for (ResourceInfo info : resources.infos().values()) {
+            java.nio.file.Path dir = resources.root().resolve(info.name());
+            entries.put(info.name(), new Entry(info, path -> {
+                java.nio.file.Path file = dir.resolve(path);
+                return java.nio.file.Files.isRegularFile(file) ? java.nio.file.Files.readAllBytes(file) : null;
+            }));
+        }
+        return entries;
+    }
+
+    /** Client: the server's resources, read from the cache; only paths in the manifest exist. */
+    public static Map<String, Entry> entries(dev.holoweb.troupe.net.Protocol.Manifest m, java.nio.file.Path cache) {
+        Map<String, Entry> entries = new TreeMap<>();
+        m.resources().forEach((name, files) -> {
+            LuaRuntime.Files read = path -> {
+                Integer blob = files.get(path);
+                return blob == null ? null : java.nio.file.Files.readAllBytes(cache.resolve(m.blobs().get(blob).sha256()));
+            };
+            try {
+                byte[] json = read.read(dev.holoweb.troupe.net.Protocol.RESOURCE_JSON);
+                if (json == null) throw new java.io.IOException("no resource.json");
+                entries.put(name, new Entry(ResourceInfo.parse(name, new String(json, java.nio.charset.StandardCharsets.UTF_8)), read));
+            } catch (java.io.IOException e) {
+                LuaRuntime.LOG.error("Resource {}: {}", name, e.getMessage());
+            }
+        });
+        return entries;
     }
 
     /** Every game tick: wakes timers that are due. */
@@ -285,5 +347,6 @@ public final class ResourceHost {
     public void resetState() {
         globalState.clear();
         playerState.clear();
+        generations.clear();
     }
 }

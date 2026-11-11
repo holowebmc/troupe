@@ -19,8 +19,9 @@ import java.util.regex.Pattern;
  * <pre>
  * server → client
  *   MANIFEST  varint version, varint blobs, blobs × (32 bytes sha256, varlong size),
- *             varint resources, resources × (string name, varint files, files × (string path, varint blob))
+ *             varint resources, resources × (string name, varint generation, varint files, files × (string path, varint blob))
  *   CHUNK     varint blob, data up to the end of the message (blobs go in WANT order, each from offset 0)
+ *   (the same four messages are reused in the play phase when the server's running resources change)
  * client → server
  *   WANT      varint version, bitmap of the blobs the client lacks (bit i = blob i, LSB first)
  *   READY     every wanted blob is in the client cache
@@ -37,7 +38,7 @@ import java.util.regex.Pattern;
  */
 public final class Protocol {
     public static final String CHANNEL = "troupe:v1";
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     public static final int MANIFEST = 0, CHUNK = 1; // server → client
     public static final int WANT = 0, READY = 1;     // client → server
@@ -66,9 +67,16 @@ public final class Protocol {
 
     public record Blob(String sha256, long size) {}
 
-    /** {@code resources}: resource name → (path inside the resource → index in {@code blobs}). */
-    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources) {
-        public static final Manifest EMPTY = new Manifest(List.of(), Map.of());
+    /**
+     * {@code resources}: resource name → (path inside the resource → index in {@code blobs}).
+     * {@code generations}: bumps every time the resource starts on the server; a client restarts its side when it changes.
+     */
+    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations) {
+        public static final Manifest EMPTY = new Manifest(List.of(), Map.of(), Map.of());
+
+        public int generation(String resource) {
+            return generations.getOrDefault(resource, 0);
+        }
     }
 
     /** Resource names end up as URL hosts ({@code vitrine://name/}), so they stay lowercase and simple. */
@@ -94,7 +102,7 @@ public final class Protocol {
         for (Blob b : m.blobs()) out.bytes(HEX.parseHex(b.sha256())).varlong(b.size());
         out.varint(m.resources().size());
         m.resources().forEach((name, files) -> {
-            out.string(name).varint(files.size());
+            out.string(name).varint(m.generation(name)).varint(files.size());
             files.forEach((path, blob) -> out.string(path).varint(blob));
         });
         return out.toByteArray();
@@ -115,9 +123,11 @@ public final class Protocol {
         }
         int resourceCount = in.count(10_000);
         Map<String, Map<String, Integer>> resources = new LinkedHashMap<>();
+        Map<String, Integer> generations = new LinkedHashMap<>();
         for (int r = 0; r < resourceCount; r++) {
             String name = in.string();
             if (!validName(name) || resources.containsKey(name)) throw new ProtocolException("bad resource name: " + name);
+            generations.put(name, in.varint());
             int fileCount = in.count(MAX_BLOBS);
             Map<String, Integer> files = new TreeMap<>();
             for (int f = 0; f < fileCount; f++) {
@@ -130,7 +140,7 @@ public final class Protocol {
             resources.put(name, files);
         }
         in.end();
-        return new Manifest(blobs, resources);
+        return new Manifest(blobs, resources, generations);
     }
 
     /** Message writer: type byte first, then fields. */

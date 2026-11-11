@@ -2,7 +2,6 @@ package dev.holoweb.troupe.lua;
 
 import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.lua.ResourceHost.ResourceException;
-import dev.holoweb.troupe.net.ProtocolException;
 import dev.holoweb.troupe.net.ResourceInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,25 +35,39 @@ class NetTest {
         clientHost = new ResourceHost(Side.CLIENT, Runnable::run, () -> clock[0]);
         serverHost.modules().module("probe").function("see", a -> server.add(a.get(0)));
         clientHost.modules().module("probe").function("see", a -> client.add(a.get(0)));
-        toServer = new Link(clientHost, msg -> wire.add(() -> deliver(toClient, msg)), () -> {
+        toServer = new Link(clientHost, out(msg -> wire.add(() -> deliver(toClient, msg))), () -> {
             try {
                 clientHost.start(clientResource);
             } catch (ResourceException e) {
                 throw new AssertionError(e);
             }
-        });
-        toClient = new Link(serverHost, new Peer("p1", "Ana"), msg -> wire.add(() -> deliver(toServer, msg)));
+        }, null, m -> {});
+        toClient = new Link(serverHost, new Peer("p1", "Ana"), out(msg -> wire.add(() -> deliver(toServer, msg))));
         links = new Links(serverHost);
         serverHost.setNetwork(links);
         clientHost.setNetwork(toServer);
     }
 
-    private static void deliver(Link to, byte[] msg) {
+    static void deliver(Link to, byte[] msg) {
         try {
             to.receive(msg);
-        } catch (ProtocolException e) {
+        } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** A Link output that hands messages to {@code send}; "written" right away. */
+    static Link.Out out(java.util.function.Consumer<byte[]> send) {
+        return new Link.Out() {
+            public void send(byte[] message, Runnable onSent) {
+                send.accept(message);
+                if (onSent != null) onSent.run();
+            }
+
+            public void disconnect(String reason) {
+                throw new AssertionError("disconnected: " + reason);
+            }
+        };
     }
 
     private void resource(String name, String json, String... files) throws IOException {

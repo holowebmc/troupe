@@ -43,6 +43,15 @@ class GameApiTest {
     }
 
     @Test
+    void startingResourceCanBeToldWhoIsOnline() throws Exception {
+        ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
+        Module players = host.modules().global("players").function("message", a -> log.add(a.string(1))).event("join");
+        host.onStart(r -> host.modules().emitTo(r, players, "join", new Peer("p1", "Ana")));
+        start(host, "server", "players.on_join(function(p) p:message('olá de novo, ' .. p.name) end)");
+        assertEquals(List.of("olá de novo, Ana"), log);
+    }
+
+    @Test
     void keysBindListensToPresses() throws Exception {
         ResourceHost host = new ResourceHost(Side.CLIENT, Runnable::run);
         Module keys = host.modules().global("keys").function("watch", a -> log.add("watch " + a.string(0))).event("press");

@@ -94,7 +94,55 @@ public record ServerResources(Manifest manifest, List<Path> files, Map<String, R
             }
             resources.put(name, resourceFiles);
         }
-        return new ServerResources(new Manifest(blobs, resources), files, infos, root);
+        return new ServerResources(new Manifest(blobs, resources, Map.of()), files, infos, root);
+    }
+
+    /**
+     * What clients get: only {@code running} resources (with client files), with their generations. Blobs are
+     * renumbered so the manifest lists only what those resources use.
+     */
+    public ServerResources only(Map<String, Integer> running) {
+        List<Blob> blobs = new ArrayList<>();
+        List<Path> files = new ArrayList<>();
+        Map<Integer, Integer> renumber = new HashMap<>();
+        Map<String, Map<String, Integer>> resources = new LinkedHashMap<>();
+        Map<String, Integer> generations = new LinkedHashMap<>();
+        manifest.resources().forEach((name, paths) -> {
+            if (!running.containsKey(name)) return;
+            Map<String, Integer> mapped = new TreeMap<>();
+            paths.forEach((path, blob) -> mapped.put(path, renumber.computeIfAbsent(blob, b -> {
+                blobs.add(manifest.blobs().get(b));
+                files.add(this.files.get(b));
+                return blobs.size() - 1;
+            })));
+            resources.put(name, mapped);
+            generations.put(name, running.get(name));
+        });
+        return new ServerResources(new Manifest(blobs, resources, generations), files, infos, root);
+    }
+
+    /**
+     * Dev mode: a cheap fingerprint per resource folder (paths, sizes, modification times), to notice edits.
+     * ponytail: walks every file each call; a WatchService if folders get big.
+     */
+    public static Map<String, Long> stamps(Path root) {
+        Map<String, Long> out = new TreeMap<>();
+        if (!Files.isDirectory(root)) return out;
+        try (Stream<Path> dirs = Files.list(root)) {
+            for (Path dir : dirs.filter(Files::isDirectory).toList()) {
+                long stamp = 17;
+                try (Stream<Path> walk = Files.walk(dir)) {
+                    for (Path f : walk.filter(Files::isRegularFile).sorted().toList())
+                        stamp = stamp * 31 + (dir.relativize(f) + ":" + Files.size(f) + ":" + Files.getLastModifiedTime(f).toMillis()).hashCode();
+                } catch (IOException | java.io.UncheckedIOException e) {
+                    stamp = -1; // mid-save; looks changed, and the next look settles it
+                }
+                out.put(dir.getFileName().toString(), stamp);
+            }
+        } catch (IOException e) {
+            return out;
+        }
+        return out;
     }
 
     static String sha256(Path file) throws IOException {

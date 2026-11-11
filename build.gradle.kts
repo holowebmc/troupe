@@ -36,6 +36,8 @@ loom.runConfigs.configureEach {
     runDirectory = rootProject.layout.projectDirectory.dir("run/${stonecutter.current.version}/$name")
     // The engine built in ../cefmod instead of the first-launch download.
     property("vitrine.cefDir", rootProject.file("../cefmod/native/build/out").absolutePath)
+    // Dev server: resources restart when their files change.
+    if (name == "server") property("troupe.dev", "true")
 }
 
 java {
