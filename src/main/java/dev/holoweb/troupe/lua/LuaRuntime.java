@@ -106,6 +106,8 @@ public final class LuaRuntime {
     private final Files files;
     private final LuaState state;
     private final LuaTable token = new LuaTable();
+    /** Methods of player handles on the server; the prelude fills it ({@code player:message(...)}). */
+    final LuaTable playerMethods = new LuaTable();
     final NetApi net;
     private final UiApi ui; // client only
 
@@ -150,6 +152,17 @@ public final class LuaRuntime {
                 }),
         }));
         net = new NetApi(this, g);
+        for (ModuleRegistry.ModuleImpl m : host.modules().globals()) {
+            LuaTable table = (LuaTable) moduleTable(m.name());
+            for (String event : m.eventNames()) {
+                String mod = m.name();
+                table.rawset("on_" + event, LibFunction.create((s, fn) -> {
+                    listen(mod, event, fn.checkFunction());
+                    return Constants.NIL;
+                }));
+            }
+            g.rawset(m.name(), table);
+        }
         ui = side == Side.CLIENT ? new UiApi(this, g, host.ui(), files) : null;
 
         LuaTable hostApi = RegisteredFunction.bind(new RegisteredFunction[]{
@@ -160,6 +173,7 @@ public final class LuaRuntime {
                 }),
         });
         hostApi.rawset("token", token);
+        hostApi.rawset("player_methods", playerMethods);
         String[] failure = new String[1];
         try (InputStream prelude = LuaRuntime.class.getResourceAsStream("/troupe/prelude.lua")) {
             LuaFunction chunk = LoadState.load(state, prelude, "=troupe", g);

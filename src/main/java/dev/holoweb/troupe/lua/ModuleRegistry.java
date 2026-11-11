@@ -37,6 +37,20 @@ public final class ModuleRegistry implements Modules {
         return modules.computeIfAbsent(name, ModuleImpl::new);
     }
 
+    /**
+     * Troupe's own API: a module every resource of this side also sees as the global {@code name}, with
+     * {@code name.on_<event>(fn)} for each event. Not in {@link Modules}: mods get {@code mods.*}, never globals.
+     */
+    public Module global(String name) {
+        ModuleImpl m = (ModuleImpl) module(name);
+        m.global = true;
+        return m;
+    }
+
+    java.util.List<ModuleImpl> globals() {
+        return modules.values().stream().filter(m -> m.global).toList();
+    }
+
     ModuleImpl find(String name) {
         return modules.get(name);
     }
@@ -49,6 +63,7 @@ public final class ModuleRegistry implements Modules {
         private final String name;
         private final Map<String, ModuleFunction> functions = new ConcurrentHashMap<>();
         private final Set<String> events = ConcurrentHashMap.newKeySet();
+        volatile boolean global;
 
         ModuleImpl(String name) {
             this.name = name;
@@ -86,6 +101,10 @@ public final class ModuleRegistry implements Modules {
 
         Set<String> functionNames() {
             return functions.keySet();
+        }
+
+        Set<String> eventNames() {
+            return events;
         }
 
         boolean hasEvent(String event) {

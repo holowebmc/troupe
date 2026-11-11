@@ -174,13 +174,21 @@ final class NetApi {
 
     // ---- players and state
 
-    /** The Lua handle of a player: {@code { id, name, state }}, one per player while they're online. */
-    private LuaTable player(Peer peer) {
+    /**
+     * The Lua handle of a player: {@code { id, name, state }} plus the methods in {@code player_methods} (prelude),
+     * one per player while they're online. On the client (no state of other players) it's just {@code { id, name }}.
+     */
+    LuaTable player(Peer peer) {
         return players.computeIfAbsent(peer.id(), id -> {
             LuaTable t = new LuaTable();
             t.rawset("id", Values.lua(id));
             t.rawset("name", Values.lua(peer.name()));
-            t.rawset("state", proxy(id, true));
+            if (server) {
+                t.rawset("state", proxy(id, true));
+                LuaTable meta = new LuaTable();
+                meta.rawset("__index", rt.playerMethods);
+                t.setMetatable(null, meta);
+            }
             return t;
         });
     }

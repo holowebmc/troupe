@@ -48,6 +48,7 @@ public final class ResourceHost {
     private final ModuleRegistry modules;
     private Network network = Network.NONE;
     private UiBackend ui;
+    private final List<java.util.function.Consumer<String>> stopListeners = new ArrayList<>();
     private Map<String, Entry> available = Map.of();
     private final LinkedHashMap<String, Running> running = new LinkedHashMap<>();
     // resource → key → json. On the client the player map has a single player, "".
@@ -89,6 +90,11 @@ public final class ResourceHost {
 
     public void setNetwork(Network network) {
         this.network = network == null ? Network.NONE : network;
+    }
+
+    /** Built-in modules hear when a resource stops, to drop what it registered (commands...). */
+    public void onStop(java.util.function.Consumer<String> listener) {
+        stopListeners.add(listener);
     }
 
     UiBackend ui() {
@@ -169,6 +175,7 @@ public final class ResourceHost {
         Running r = running.remove(name);
         if (r == null) return;
         r.runtime().close();
+        for (var l : stopListeners) l.accept(name);
         if (side == Side.SERVER && (globalState.remove(name) != null | playerState.remove(name) != null)) network.clear(name);
         stopped.add(name);
         LuaRuntime.LOG.info("Stopped {} ({})", name, side.name().toLowerCase());

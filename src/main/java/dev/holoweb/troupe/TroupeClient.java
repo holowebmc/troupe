@@ -31,6 +31,7 @@ import java.util.TreeMap;
 public final class TroupeClient implements ClientModInitializer {
     private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/cache");
     private static final ResourceHost host = new ResourceHost(Side.CLIENT, task -> Minecraft.getInstance().execute(task));
+    private static final ClientApi api = new ClientApi(host.modules());
 
     // Written on the Netty thread (Fabric runs configuration receivers there), read from the render thread.
     private static volatile ClientSync sync;
@@ -94,7 +95,10 @@ public final class TroupeClient implements ClientModInitializer {
                 ctx.player().connection.getConnection().disconnect(Component.literal("Troupe: " + e.getMessage()));
             }
         });
-        ClientTickEvents.END_CLIENT_TICK.register(client -> host.tick());
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            api.tick();
+            host.tick();
+        });
     }
 
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */

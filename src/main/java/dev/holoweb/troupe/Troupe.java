@@ -8,7 +8,6 @@ import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.api.TroupeModule;
 import dev.holoweb.troupe.lua.Link;
 import dev.holoweb.troupe.lua.Links;
-import dev.holoweb.troupe.lua.Peer;
 import dev.holoweb.troupe.lua.ResourceHost;
 import dev.holoweb.troupe.lua.ResourceHost.ResourceException;
 import dev.holoweb.troupe.net.ProtocolException;
@@ -59,6 +58,7 @@ public final class Troupe implements ModInitializer {
         if (s != null) s.execute(task);
     });
     private static final Links links = new Links(host);
+    private static final ServerApi api = new ServerApi(host.modules(), host, () -> server);
     private static volatile ServerResources resources = ServerResources.EMPTY;
     private static final Map<ServerConfigurationPacketListenerImpl, ServerSync> syncs = new ConcurrentHashMap<>();
 
@@ -78,7 +78,10 @@ public final class Troupe implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(s -> host.startAll());
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> host.stopAll());
         ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
-        ServerTickEvents.END_SERVER_TICK.register(s -> host.tick());
+        ServerTickEvents.END_SERVER_TICK.register(s -> {
+            host.tick();
+            api.tick();
+        });
         CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) -> dispatcher.register(command()));
 
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
@@ -117,11 +120,12 @@ public final class Troupe implements ModInitializer {
         // Play phase: one Link per player with Troupe. Play receivers run on the server thread.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
             ServerPlayer player = handler.player;
-            if (!ServerPlayNetworking.canSend(player, TroupePayload.TYPE)) return;
-            Peer peer = new Peer(player.getUUID().toString(), player.getGameProfile().name());
-            links.add(new Link(host, peer, bytes -> ServerPlayNetworking.send(player, new TroupePayload(bytes))));
+            if (ServerPlayNetworking.canSend(player, TroupePayload.TYPE))
+                links.add(new Link(host, ServerApi.peer(player), bytes -> ServerPlayNetworking.send(player, new TroupePayload(bytes))));
+            api.joined(player); // queued: runs after START went out, so state set by players.on_join reaches the client
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
+            api.left(handler.player); // queued before the removal below: on_leave still sees the player's state
             String id = handler.player.getUUID().toString();
             s.execute(() -> links.remove(id));
         });

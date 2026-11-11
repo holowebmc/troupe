@@ -92,6 +92,7 @@ final class Values {
         if (o instanceof Boolean b) return ValueFactory.valueOf(b);
         if (o instanceof Number n) return ValueFactory.valueOf(n.doubleValue());
         if (o instanceof CharSequence s) return lua(s.toString());
+        if (o instanceof Peer p) return runtime.net.player(p);
         if (o instanceof LuaRuntime.LuaCallback c) {
             if (c.runtime() != runtime) throw new LuaError("a function from another resource can't be passed here");
             return c.function();

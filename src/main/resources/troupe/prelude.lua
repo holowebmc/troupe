@@ -59,6 +59,38 @@ function timer.cancel(id) cancelled[id] = true end
 -- net.handle / net.emit (and net.broadcast on the server) come from Java; calls wait for the reply.
 function net.call(...) return await("call", ...) end
 
+-- relay(pcall(f, ...)) inside a wrapper: an error points at whoever called the wrapper, not at this file.
+local function relay(ok, ...)
+  if ok then return ... end
+  local msg = ...
+  if type(msg) == "string" then msg = msg:gsub("^troupe:%d+: ", "") end
+  error(msg, 3)
+end
+
+-- Server: methods of player handles (players.*, net handlers, events). Players are passed around as their id.
+local P = host.player_methods
+if players then
+  function P:message(text) return relay(pcall(players.message, self.id, text)) end
+  function P:pos() return relay(pcall(players.pos, self.id)) end
+  function P:teleport(x, y, z, dim) return relay(pcall(players.teleport, self.id, x, y, z, dim)) end
+  function P:give(item, count) return relay(pcall(players.give, self.id, item, count)) end
+  function P:online() return relay(pcall(players.online, self.id)) end
+end
+
+-- Client: keys.bind('b', fn) runs fn when b is pressed with no screen open.
+if keys then
+  local bound = {}
+  keys.on_press(function(key)
+    for _, fn in ipairs(bound[key] or {}) do fn() end
+  end)
+  function keys.bind(key, fn)
+    if type(fn) ~= "function" then error("bad argument #2 to 'bind' (function expected, got " .. type(fn) .. ")", 2) end
+    relay(pcall(keys.watch, key))
+    bound[key] = bound[key] or {}
+    table.insert(bound[key], fn)
+  end
+end
+
 -- resource('banco').sacar(10) calls what banco's main.lua returned, in banco's own state, and waits for it.
 function resource(name)
   if type(name) ~= "string" then error("bad argument #1 to 'resource' (string expected, got " .. type(name) .. ")", 2) end
