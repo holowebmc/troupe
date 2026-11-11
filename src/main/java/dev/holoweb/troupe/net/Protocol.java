@@ -41,6 +41,8 @@ public final class Protocol {
 
     /** Folders the client receives; everything else in a resource (server/) never leaves the server. */
     public static final List<String> CLIENT_DIRS = List.of("client", "shared", "ui", "assets");
+    /** Sent with the client files: the client needs the dependencies too. */
+    public static final String RESOURCE_JSON = "resource.json";
 
     private static final Pattern NAME = Pattern.compile("[a-z0-9_-]{1,64}");
     private static final Pattern BAD_SEGMENT = Pattern.compile("\\.{1,2}|.*[\\\\:*?\"<>|\\p{Cntrl}].*");
@@ -60,8 +62,12 @@ public final class Protocol {
         return NAME.matcher(name).matches();
     }
 
-    /** Relative, '/'-separated, inside one of {@link #CLIENT_DIRS}, no '..' and nothing Windows can't name. */
+    /**
+     * {@code resource.json}, or relative, '/'-separated, inside one of {@link #CLIENT_DIRS}, no '..' and nothing
+     * Windows can't name.
+     */
     public static boolean validPath(String path) {
+        if (path.equals(RESOURCE_JSON)) return true;
         if (path.length() > 256 || path.startsWith("/") || path.endsWith("/")) return false;
         String[] segments = path.split("/", -1);
         if (segments.length < 2 || !CLIENT_DIRS.contains(segments[0])) return false;

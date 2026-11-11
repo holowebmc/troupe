@@ -12,3 +12,4 @@ bin/
 *.DS_Store
 run/
 hs_err_*.log
+logs/

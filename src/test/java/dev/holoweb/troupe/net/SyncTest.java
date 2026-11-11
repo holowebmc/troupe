@@ -45,15 +45,17 @@ class SyncTest {
         ServerResources resources = ServerResources.scan(root, warnings::add);
         assertEquals(List.of("banco", "hud"), List.copyOf(resources.manifest().resources().keySet()));
         assertEquals(2, warnings.size(), warnings.toString());
-        assertEquals(4, resources.files().size()); // main.lua shared by both, config, app.js, empty.css
+        // main.lua shared by both, config, app.js, empty.css, and the two resource.json
+        assertEquals(6, resources.files().size());
+        assertEquals(List.of("banco", "hud", "so-servidor"), List.copyOf(resources.infos().keySet()));
 
         Path cache = tmp.resolve("cache");
         Result first = sync(resources, cache, UnaryOperator.identity());
         Manifest m = first.manifest;
-        assertEquals(List.of("client/main.lua", "shared/config.lua", "ui/app.js", "ui/empty.css"), List.copyOf(m.resources().get("banco").keySet()));
+        assertEquals(List.of("client/main.lua", "resource.json", "shared/config.lua", "ui/app.js", "ui/empty.css"), List.copyOf(m.resources().get("banco").keySet()));
         assertArrayEquals(big, Files.readAllBytes(cache.resolve(m.blobs().get(m.resources().get("banco").get("ui/app.js")).sha256())));
         assertEquals(m.resources().get("banco").get("client/main.lua"), m.resources().get("hud").get("client/main.lua"));
-        assertEquals(3, first.client.downloadedFiles()); // empty.css is created, not downloaded
+        assertEquals(5, first.client.downloadedFiles()); // empty.css is created, not downloaded
 
         Result second = sync(resources, cache, UnaryOperator.identity());
         assertEquals(m, second.manifest);

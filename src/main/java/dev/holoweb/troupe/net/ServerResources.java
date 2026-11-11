@@ -1,13 +1,10 @@
 package dev.holoweb.troupe.net;
 
-import com.google.gson.JsonParseException;
-import com.google.gson.JsonParser;
 import dev.holoweb.troupe.net.Protocol.Blob;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -22,13 +19,16 @@ import java.util.TreeMap;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 
-/** What the server offers clients: the manifest plus, for each blob, the file it is read from. */
-public record ServerResources(Manifest manifest, List<Path> files) {
-    public static final ServerResources EMPTY = new ServerResources(Manifest.EMPTY, List.of());
+/**
+ * The server's resources: every valid one in {@code infos} (folder {@code root/<name>/}), and what clients get: the
+ * manifest plus, for each blob, the file it is read from.
+ */
+public record ServerResources(Manifest manifest, List<Path> files, Map<String, ResourceInfo> infos, Path root) {
+    public static final ServerResources EMPTY = new ServerResources(Manifest.EMPTY, List.of(), Map.of(), Path.of("resources"));
 
     /**
-     * Scans {@code root/<name>/}: a folder is a resource when it has a {@code resource.json}. Only the client folders
-     * go into the manifest, and only resources with client files at all. Problems with one resource skip it.
+     * Scans {@code root/<name>/}: a folder is a resource when it has a {@code resource.json}. Only resources with client
+     * files go into the manifest, with their client folders and {@code resource.json}. Problems with one resource skip it.
      */
     public static ServerResources scan(Path root, Consumer<String> warn) throws IOException {
         Files.createDirectories(root);
@@ -36,6 +36,7 @@ public record ServerResources(Manifest manifest, List<Path> files) {
         List<Path> files = new ArrayList<>();
         Map<String, Integer> byHash = new HashMap<>();
         Map<String, Map<String, Integer>> resources = new LinkedHashMap<>();
+        Map<String, ResourceInfo> infos = new LinkedHashMap<>();
 
         List<Path> dirs;
         try (Stream<Path> list = Files.list(root)) {
@@ -52,14 +53,14 @@ public record ServerResources(Manifest manifest, List<Path> files) {
                 warn.accept(name + ": no resource.json");
                 continue;
             }
-            try (Reader r = Files.newBufferedReader(json)) {
-                if (!JsonParser.parseReader(r).isJsonObject()) throw new JsonParseException("not an object");
-            } catch (JsonParseException e) {
-                warn.accept(name + ": bad resource.json: " + e.getMessage());
+            try {
+                infos.put(name, ResourceInfo.parse(name, Files.readString(json)));
+            } catch (IOException e) {
+                warn.accept(name + ": " + e.getMessage());
                 continue;
             }
 
-            Map<String, Integer> resourceFiles = new TreeMap<>();
+            Map<String, Path> clientFiles = new TreeMap<>();
             for (String sub : Protocol.CLIENT_DIRS) {
                 Path subDir = dir.resolve(sub);
                 if (!Files.isDirectory(subDir)) continue;
@@ -73,20 +74,27 @@ public record ServerResources(Manifest manifest, List<Path> files) {
                         warn.accept(name + "/" + path + ": skipped (bad file name)");
                         continue;
                     }
-                    String sha = sha256(file);
-                    Integer index = byHash.get(sha);
-                    if (index == null) {
-                        index = blobs.size();
-                        byHash.put(sha, index);
-                        blobs.add(new Blob(sha, Files.size(file)));
-                        files.add(file);
-                    }
-                    resourceFiles.put(path, index);
+                    clientFiles.put(path, file);
                 }
             }
-            if (!resourceFiles.isEmpty()) resources.put(name, resourceFiles);
+            if (clientFiles.isEmpty()) continue;
+            clientFiles.put(Protocol.RESOURCE_JSON, json);
+
+            Map<String, Integer> resourceFiles = new TreeMap<>();
+            for (Map.Entry<String, Path> f : clientFiles.entrySet()) {
+                String sha = sha256(f.getValue());
+                Integer index = byHash.get(sha);
+                if (index == null) {
+                    index = blobs.size();
+                    byHash.put(sha, index);
+                    blobs.add(new Blob(sha, Files.size(f.getValue())));
+                    files.add(f.getValue());
+                }
+                resourceFiles.put(f.getKey(), index);
+            }
+            resources.put(name, resourceFiles);
         }
-        return new ServerResources(new Manifest(blobs, resources), files);
+        return new ServerResources(new Manifest(blobs, resources), files, infos, root);
     }
 
     static String sha256(Path file) throws IOException {

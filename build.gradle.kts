@@ -8,8 +8,18 @@ base.archivesName = "troupe"
 
 val javaVersion = JavaVersion.toVersion(property("java").toString())
 
+repositories {
+    maven("https://maven.squiddev.cc") {
+        name = "SquidDev"
+        content { includeGroup("cc.tweaked") }
+    }
+}
+
 dependencies {
     minecraft("com.mojang:minecraft:${property("minecraft")}")
+    // Lua 5.2 VM in plain Java (MIT), the one CC: Tweaked uses; shipped inside our jar.
+    implementation("cc.tweaked:cobalt:${property("deps.cobalt")}")
+    include("cc.tweaked:cobalt:${property("deps.cobalt")}")
     implementation("net.fabricmc:fabric-loader:${property("deps.fabric_loader")}")
     implementation("net.fabricmc.fabric-api:fabric-api:${property("deps.fabric_api")}")
 
