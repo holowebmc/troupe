@@ -78,7 +78,7 @@ class JavaApiTest {
     @Test
     void offByDefaultAndNeverOnTheClient() throws Exception {
         run(host(Side.SERVER, List.of()), "see(select(2, pcall(java.class, 'java.util.ArrayList')))");
-        assertTrue(seen.getFirst().toString().contains("java.* is off"), seen.getFirst().toString());
+        assertTrue(seen.get(0).toString().contains("java.* is off"), seen.get(0).toString());
         seen.clear();
         run(host(Side.CLIENT, List.of("java.util")), "see(java == nil)");
         assertEquals(List.of(true), seen);

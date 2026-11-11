@@ -28,7 +28,7 @@ final class ClientApi {
 
     ClientApi(ModuleRegistry modules) {
         modules.global("player")
-                .function("name", a -> me().getGameProfile().name())
+                .function("name", a -> Compat.name(me().getGameProfile()))
                 .function("pos", a -> {
                     Vec3 v = me().position();
                     Map<String, Object> pos = new LinkedHashMap<>();
@@ -58,9 +58,9 @@ final class ClientApi {
 
     /** Every client tick: a watched key that went down, with no screen open, is a press. */
     void tick() {
-        boolean free = Minecraft.getInstance().gui.screen() == null && Minecraft.getInstance().player != null;
+        boolean free = ClientCompat.screen() == null && Minecraft.getInstance().player != null;
         keys.forEach((name, code) -> {
-            boolean now = InputConstants.isKeyDown(code);
+            boolean now = ClientCompat.keyDown(code);
             if (now && !down.getOrDefault(name, false) && free) keyModule.emit("press", name);
             down.put(name, now);
         });

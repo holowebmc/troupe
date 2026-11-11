@@ -124,7 +124,7 @@ class UiTest {
                 assert(not pcall(ui.screen, '../x.html'))""");
         assertEquals("world index.html 800x600 at 1.0,64.5,-3.0 yaw 90.0 width 3.0 true", log.get(1));
         assertEquals("move 2.0", log.get(3));
-        assertEquals("close", log.getLast());
+        assertEquals("close", log.get(log.size() - 1));
     }
 
     @Test

@@ -1,5 +1,6 @@
 package dev.holoweb.troupe;
 
+//? if >=1.20.5 {
 import dev.holoweb.troupe.net.Protocol;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -22,3 +23,29 @@ public record TroupePayload(byte[] data) implements CustomPacketPayload {
         return TYPE;
     }
 }
+//?} else {
+/*import dev.holoweb.troupe.net.Protocol;
+import net.fabricmc.fabric.api.networking.v1.FabricPacket;
+import net.fabricmc.fabric.api.networking.v1.PacketType;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.resources.Identifier;
+
+/^* The {@code troupe:v1} custom payload: raw protocol bytes, no Minecraft framing inside (see {@link Protocol}). *^/
+public record TroupePayload(byte[] data) implements FabricPacket {
+    public static final PacketType<TroupePayload> TYPE = PacketType.create(new Identifier(Protocol.CHANNEL), buf -> {
+        byte[] data = new byte[buf.readableBytes()];
+        buf.readBytes(data);
+        return new TroupePayload(data);
+    });
+
+    @Override
+    public void write(FriendlyByteBuf buf) {
+        buf.writeBytes(data);
+    }
+
+    @Override
+    public PacketType<?> getType() {
+        return TYPE;
+    }
+}
+*///?}

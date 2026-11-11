@@ -19,9 +19,6 @@ import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
@@ -29,11 +26,8 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.network.ConfigurationTask;
-import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,11 +37,10 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 
 /**
- * Server side (dedicated or integrated): runs the resources in {@code resources/} and sends their client files during
- * configuration.
+ * Server side (dedicated or integrated): runs the resources in {@code resources/} and sends their client files
+ * (during configuration where it exists, see {@link ConfigPhase}; else on join).
  */
 public final class Troupe implements ModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("troupe");
@@ -63,19 +56,17 @@ public final class Troupe implements ModInitializer {
     private static volatile ServerResources resources = ServerResources.EMPTY;
     /** What clients run: the running resources with client files, with their generations. */
     private static volatile ServerResources published = ServerResources.EMPTY;
-    private static final Map<ServerConfigurationPacketListenerImpl, ServerSync> syncs = new ConcurrentHashMap<>();
     /** What each player got during configuration, to catch up if it changed before they reached play. */
     private static final Map<java.util.UUID, ServerResources> configured = new ConcurrentHashMap<>();
+    /** Players still on their first download in play (no configuration phase). */
+    private static final Map<java.util.UUID, Link> downloading = new ConcurrentHashMap<>();
     /** -Dtroupe.dev=true: watch resources/ and restart what changes on disk. */
     private static final boolean DEV = Boolean.getBoolean("troupe.dev");
     private static Map<String, Long> devStamps;
 
     @Override
     public void onInitialize() {
-        PayloadTypeRegistry.clientboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.serverboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
+        ConfigPhase.register(() -> published, configured);
         host.setNetwork(links);
         registerModules(host.modules());
 
@@ -98,67 +89,62 @@ public final class Troupe implements ModInitializer {
         });
         CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) -> dispatcher.register(command()));
 
-        ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
-            ServerResources current = published;
-            configured.put(handler.getOwner().id(), current);
-            if (current.manifest().resources().isEmpty()) return;
-            if (!ServerConfigurationNetworking.canSend(handler, TroupePayload.TYPE)) {
-                handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
-                return;
-            }
-            ServerSync sync = new ServerSync(current, sender(ServerConfigurationNetworking.getSender(handler)));
-            syncs.put(handler, sync);
-            handler.addTask(new SyncTask(sync));
-        });
-
-        // Fabric runs configuration receivers on the Netty thread (unlike play): the task queue belongs to the server thread.
-        ServerConfigurationNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            ServerConfigurationPacketListenerImpl handler = ctx.packetListener();
-            ServerSync sync = syncs.get(handler);
-            if (sync == null) return;
-            try {
-                if (sync.receive(payload.data())) {
-                    syncs.remove(handler).close();
-                    ctx.server().execute(() -> handler.completeTask(SyncTask.TYPE));
-                }
-            } catch (IOException e) {
-                LOG.warn("Troupe protocol error from {}: {}", handler.getOwner().name(), e.getMessage());
-                handler.disconnect(Component.literal("Troupe: " + e.getMessage()));
-            }
-        });
-
-        ServerConfigurationConnectionEvents.DISCONNECT.register((handler, s) -> {
-            ServerSync sync = syncs.remove(handler);
-            if (sync != null) sync.close();
-        });
-
         // Play phase: one Link per player with Troupe. Play receivers run on the server thread.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
             ServerPlayer player = handler.player;
             ServerResources got = configured.remove(player.getUUID());
             if (ServerPlayNetworking.canSend(player, TroupePayload.TYPE)) {
-                Link link = new Link(host, ServerApi.peer(player), out(ServerPlayNetworking.getSender(player)));
-                links.add(link);
+                Link link = new Link(host, ServerApi.peer(player), out(player));
                 ServerResources now = published;
+                if (got == null && !now.manifest().resources().isEmpty()) {
+                    // No configuration phase (before 1.20.2): the first download happens in play, and the player
+                    // joins (global state, START, on_join) once it's in, as they would after configuration.
+                    downloading.put(player.getUUID(), link);
+                    link.push(now, () -> {
+                        downloading.remove(player.getUUID());
+                        links.add(link);
+                        if (!published.manifest().equals(now.manifest())) link.push(published);
+                        api.joined(player);
+                    });
+                    return;
+                }
+                links.add(link);
                 if (!now.manifest().equals((got == null ? ServerResources.EMPTY : got).manifest())) link.push(now);
+            } else if (!published.manifest().resources().isEmpty()) {
+                handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
+                return;
             }
             api.joined(player); // queued: runs after START went out, so state set by players.on_join reaches the client
         });
         ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
+            java.util.UUID uuid = handler.player.getUUID();
+            if (downloading.containsKey(uuid)) { // never joined: no on_leave
+                s.execute(() -> {
+                    Link d = downloading.remove(uuid);
+                    if (d != null) d.close();
+                });
+                return;
+            }
             api.left(handler.player); // queued before the removal below: on_leave still sees the player's state
             String id = handler.player.getUUID().toString();
             s.execute(() -> links.remove(id));
         });
-        ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            Link link = links.get(ctx.player().getUUID().toString());
-            if (link == null) return;
-            try {
-                link.receive(payload.data());
-            } catch (IOException e) {
-                LOG.warn("Troupe protocol error from {}: {}", ctx.player().getGameProfile().name(), e.getMessage());
-                ctx.player().connection.disconnect(Component.literal("Troupe: " + e.getMessage()));
-            }
-        });
+        //? if >=1.20.5 {
+        ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
+        //?} else
+        /*ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
+    }
+
+    private static void receive(TroupePayload payload, ServerPlayer player) {
+        Link link = links.get(player.getUUID().toString());
+        if (link == null) link = downloading.get(player.getUUID());
+        if (link == null) return;
+        try {
+            link.receive(payload.data());
+        } catch (IOException e) {
+            LOG.warn("Troupe protocol error from {}: {}", Compat.name(player.getGameProfile()), e.getMessage());
+            player.connection.disconnect(Component.literal("Troupe: " + e.getMessage()));
+        }
     }
 
     /** Calls the {@code troupe} entrypoint and the side-specific one with this side's module registry. */
@@ -180,7 +166,7 @@ public final class Troupe implements ModInitializer {
      * ponytail: rehashes every client file each time; cache hashes by mtime if resources get big.
      */
     private static void rescan(MinecraftServer s) {
-        Path root = s.getServerDirectory().resolve("resources");
+        Path root = Compat.serverDir(s).resolve("resources");
         try {
             resources = ServerResources.scan(root, w -> LOG.warn("Resource {}", w));
         } catch (IOException e) {
@@ -230,7 +216,7 @@ public final class Troupe implements ModInitializer {
 
     /** Dev mode, once a second: a resource whose files changed restarts; a new one starts; a deleted one stops. */
     private static void devCheck(MinecraftServer s) {
-        Map<String, Long> now = ServerResources.stamps(s.getServerDirectory().resolve("resources"));
+        Map<String, Long> now = ServerResources.stamps(Compat.serverDir(s).resolve("resources"));
         Map<String, Long> before = devStamps;
         devStamps = now;
         if (before == null || before.equals(now)) return;
@@ -262,7 +248,7 @@ public final class Troupe implements ModInitializer {
 
     private static LiteralArgumentBuilder<CommandSourceStack> command() {
         return Commands.literal("troupe")
-                .requires(Commands.hasPermission(Commands.LEVEL_ADMINS))
+                .requires(src -> Compat.permission(src, 3))
                 .then(Commands.literal("list").executes(c -> {
                     StringBuilder out = new StringBuilder("Resources:");
                     for (String name : host.available())
@@ -303,8 +289,8 @@ public final class Troupe implements ModInitializer {
         return 1;
     }
 
-    private static Link.Out out(PacketSender packets) {
-        ServerSync.Sender s = sender(packets);
+    private static Link.Out out(ServerPlayer player) {
+        ServerSync.Sender s = sender(ServerPlayNetworking.getSender(player), reason -> player.connection.disconnect(reason));
         return new Link.Out() {
             public void send(byte[] message, Runnable onSent) {
                 s.send(message, onSent);
@@ -316,36 +302,25 @@ public final class Troupe implements ModInitializer {
         };
     }
 
-    private static ServerSync.Sender sender(PacketSender packets) {
+    /** {@code disconnect}: PacketSender only has it from 1.20.5. */
+    static ServerSync.Sender sender(PacketSender packets, java.util.function.Consumer<Component> disconnect) {
         return new ServerSync.Sender() {
             @Override
             public void send(byte[] message, Runnable onSent) {
                 TroupePayload payload = new TroupePayload(message);
                 if (onSent == null) packets.sendPacket(payload);
+                //? if >=1.20.5 {
                 else packets.sendPacket(payload, future -> {
                     if (future.isSuccess()) onSent.run();
                 });
+                //?} else
+                /*else packets.sendPacket(payload, net.minecraft.network.PacketSendListener.thenRun(onSent));*/
             }
 
             @Override
             public void disconnect(String reason) {
-                packets.disconnect(Component.literal(reason));
+                disconnect.accept(Component.literal(reason));
             }
         };
-    }
-
-    /** Holds the player in configuration until the client says every file is cached. */
-    private record SyncTask(ServerSync sync) implements ConfigurationTask {
-        static final Type TYPE = new Type("troupe:sync");
-
-        @Override
-        public void start(Consumer<Packet<?>> send) {
-            sync.start();
-        }
-
-        @Override
-        public Type type() {
-            return TYPE;
-        }
     }
 }

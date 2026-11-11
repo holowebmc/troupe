@@ -38,6 +38,7 @@ public final class Link implements Network {
     private final Consumer<Protocol.Manifest> onManifest;
     private ServerSync serverSync;
     private ServerResources nextPush;
+    private Runnable afterPush;
     private ClientSync clientSync;
     private final Map<Integer, Reply> pending = new HashMap<>();
     private int nextId;
@@ -106,7 +107,13 @@ public final class Link implements Network {
 
     /** Server: the client should run {@code pack} now. One download at a time; a newer push waits for it. */
     public void push(ServerResources pack) {
+        push(pack, null);
+    }
+
+    /** {@code then}: runs once the client has every file of {@code pack} (not if it disconnects first). */
+    public void push(ServerResources pack, Runnable then) {
         if (closed) return;
+        if (then != null) afterPush = then;
         if (serverSync != null) {
             nextPush = pack;
             return;
@@ -145,6 +152,11 @@ public final class Link implements Network {
                         ServerResources next = nextPush;
                         nextPush = null;
                         if (next != null) push(next);
+                        else if (afterPush != null) {
+                            Runnable then = afterPush;
+                            afterPush = null;
+                            then.run();
+                        }
                     }
                 } else {
                     if (clientSync == null) {

@@ -82,13 +82,13 @@ final class ServerApi {
                     pos.put("x", v.x);
                     pos.put("y", v.y);
                     pos.put("z", v.z);
-                    pos.put("dim", p.level().dimension().identifier().toString());
+                    pos.put("dim", Compat.dimension(Compat.level(p)));
                     return pos;
                 })
                 .function("teleport", a -> {
                     ServerPlayer p = player(a);
-                    ServerLevel level = a.get(4) == null ? p.level() : level(a.string(4));
-                    return p.teleportTo(level, a.number(1), a.number(2), a.number(3), Set.of(), p.getYRot(), p.getXRot(), true);
+                    ServerLevel level = a.get(4) == null ? Compat.level(p) : level(a.string(4));
+                    return Compat.teleport(p, level, a.number(1), a.number(2), a.number(3));
                 })
                 .function("give", a -> {
                     var item = BuiltInRegistries.ITEM.getOptional(id(a.string(1)))
@@ -169,7 +169,7 @@ final class ServerApi {
     }
 
     static Peer peer(ServerPlayer p) {
-        return new Peer(p.getUUID().toString(), p.getGameProfile().name());
+        return new Peer(p.getUUID().toString(), Compat.name(p.getGameProfile()));
     }
 
     private MinecraftServer server() {
@@ -179,7 +179,7 @@ final class ServerApi {
     }
 
     private Store store() {
-        if (store == null) store = new Store(server().getServerDirectory().resolve("troupe/store"));
+        if (store == null) store = new Store(Compat.serverDir(server()).resolve("troupe/store"));
         return store;
     }
 
@@ -252,7 +252,7 @@ final class ServerApi {
             src.sendFailure(Component.literal("/" + name + " is gone (its resource stopped)"));
             return 0;
         }
-        if (cmd.admin() && !Commands.hasPermission(Commands.LEVEL_GAMEMASTERS).test(src)) {
+        if (cmd.admin() && !Compat.permission(src, 2)) {
             src.sendFailure(Component.literal("You don't have permission to use /" + name));
             return 0;
         }

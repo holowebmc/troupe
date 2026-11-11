@@ -8,13 +8,16 @@ import dev.holoweb.troupe.net.Protocol;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 import dev.holoweb.troupe.net.ResourceInfo;
 import net.fabricmc.api.ClientModInitializer;
+//? if >=1.20.5 {
 import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
+//?}
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 
 import java.io.IOException;
@@ -25,8 +28,8 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Client side: downloads the server's resources into the shared cache while the connection is configuring, runs
- * them while in the world.
+ * Client side: downloads the server's resources into the shared cache while the connection is configuring (or, before
+ * 1.20.2, when the server pushes them on join), runs them while in the world.
  */
 public final class TroupeClient implements ClientModInitializer {
     private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/cache");
@@ -40,6 +43,8 @@ public final class TroupeClient implements ClientModInitializer {
     private static volatile Manifest manifest = Manifest.EMPTY;
     /** The play connection to the server; render thread only. */
     private static Link link;
+    /** The server said START on this connection (render thread). */
+    private static boolean started;
 
     public static Manifest manifest() {
         return manifest;
@@ -51,6 +56,7 @@ public final class TroupeClient implements ClientModInitializer {
         if (FabricLoader.getInstance().isModLoaded("vitrine")) host.setUi(VitrineUi.create());
         else Troupe.LOG.info("Vitrine isn't installed: resource pages (ui.*) won't open");
 
+        //? if >=1.20.5 {
         ClientConfigurationConnectionEvents.INIT.register((handler, client) -> {
             reset();
             manifest = Manifest.EMPTY;
@@ -73,10 +79,14 @@ public final class TroupeClient implements ClientModInitializer {
                 ctx.responseSender().disconnect(Component.translatableWithFallback("troupe.disconnect.sync_failed", "Troupe: %s", e.getMessage()));
             }
         });
+        //?}
 
         // INIT comes before any play packet, and its task is queued ahead of their handling on the render thread.
         // The resources start when the server says START (after it sent the global state).
         ClientPlayConnectionEvents.INIT.register((handler, client) -> client.execute(() -> {
+            started = false;
+            //? if <1.20.5
+            /*manifest = Manifest.EMPTY;*/ // no configuration phase: the manifest comes in play
             link = new Link(host, new Link.Out() {
                 public void send(byte[] message, Runnable onSent) {
                     ClientPlayNetworking.send(new TroupePayload(message));
@@ -97,32 +107,42 @@ public final class TroupeClient implements ClientModInitializer {
             host.setNetwork(null);
             host.resetState();
         }));
-        ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            if (link == null) return;
-            try {
-                link.receive(payload.data());
-            } catch (IOException e) {
-                Troupe.LOG.warn("Troupe protocol error from the server: {}", e.getMessage());
-                ctx.player().connection.getConnection().disconnect(Component.literal("Troupe: " + e.getMessage()));
-            }
-        });
+        //? if >=1.20.5 {
+        ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
+        //?} else
+        /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             api.tick();
             host.tick();
         });
     }
 
+    private static void receive(TroupePayload payload, LocalPlayer player) {
+        if (link == null) return;
+        try {
+            link.receive(payload.data());
+        } catch (IOException e) {
+            Troupe.LOG.warn("Troupe protocol error from the server: {}", e.getMessage());
+            player.connection.getConnection().disconnect(Component.literal("Troupe: " + e.getMessage()));
+        }
+    }
+
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */
     private static void startResources() {
+        started = true;
         Manifest m = manifest;
         host.apply(ResourceHost.entries(m, CACHE), m.generations());
         assets.apply(m);
     }
 
-    /** The server's running resources changed while we're in the world; the files are in the cache already. */
+    /**
+     * A pushed manifest is fully in the cache: the server's running resources changed while we're in the world, or
+     * (before 1.20.2) the first download is done, and START follows.
+     */
     private static void applyManifest(Manifest m) {
-        Troupe.LOG.info("Server resources changed: {}", m.generations());
         manifest = m;
+        if (!started) return;
+        Troupe.LOG.info("Server resources changed: {}", m.generations());
         host.apply(ResourceHost.entries(m, CACHE), m.generations());
         assets.apply(m);
     }

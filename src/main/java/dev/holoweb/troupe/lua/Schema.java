@@ -31,7 +31,7 @@ final class Schema {
                 throw new IllegalArgumentException(where + ": unknown type '" + type + "'");
         } else if (s instanceof List<?> list) {
             if (list.size() != 1) throw new IllegalArgumentException(where + ": a list schema has exactly one element type");
-            check(list.getFirst(), where + "[]");
+            check(list.get(0), where + "[]");
         } else if (s instanceof Map<?, ?> map) {
             map.forEach((k, v) -> check(v, where + "." + k));
         } else {
@@ -66,7 +66,7 @@ final class Schema {
             // An empty table can't tell list from object apart.
             if (v instanceof Map<?, ?> m && m.isEmpty()) return;
             if (!(v instanceof List<?> items)) throw new IllegalArgumentException(where + ": list expected, got " + typeName(v));
-            for (int i = 0; i < items.size(); i++) validate(list.getFirst(), items.get(i), where + "[" + (i + 1) + "]");
+            for (int i = 0; i < items.size(); i++) validate(list.get(0), items.get(i), where + "[" + (i + 1) + "]");
         } else {
             Map<?, ?> fields = (Map<?, ?>) schema;
             if (v instanceof List<?> l && l.isEmpty()) v = Map.of();

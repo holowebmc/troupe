@@ -148,7 +148,7 @@ public final class ResourceHost {
         if (running.containsKey(name)) return;
         Entry entry = available.get(name);
         if (entry == null) throw new ResourceException("unknown resource '" + name + "'");
-        if (chain.contains(name)) throw new ResourceException("dependency cycle: " + String.join(" -> ", chain.reversed()) + " -> " + name);
+        if (chain.contains(name)) throw new ResourceException("dependency cycle: " + String.join(" -> ", reversed(chain)) + " -> " + name);
         chain.push(name);
         for (String dep : entry.info().dependencies()) {
             // A dependency with no client files isn't sent to clients; the server already checked it exists.
@@ -205,7 +205,7 @@ public final class ResourceHost {
     public void restart(String name) throws ResourceException {
         List<String> stopped = stop(name);
         start(name);
-        for (String dependent : stopped.reversed()) start(dependent);
+        for (String dependent : reversed(stopped)) start(dependent);
     }
 
     /** Starts every available resource; one failing doesn't keep the others from starting. */
@@ -220,7 +220,7 @@ public final class ResourceHost {
     }
 
     public void stopAll() {
-        for (String name : List.copyOf(running.keySet()).reversed()) stop(name);
+        for (String name : reversed(running.keySet())) stop(name);
     }
 
     /** Server: running resources and their generation (what clients are told to run). */
@@ -235,7 +235,7 @@ public final class ResourceHost {
      * with their dependents, then starts everything that isn't running.
      */
     public void apply(Map<String, Entry> entries, Map<String, Integer> serverGenerations) {
-        for (String name : List.copyOf(running.keySet()).reversed())
+        for (String name : reversed(running.keySet()))
             if (!entries.containsKey(name) || !serverGenerations.getOrDefault(name, 0).equals(generations.getOrDefault(name, 0))) stop(name);
         generations.clear();
         generations.putAll(serverGenerations);
@@ -273,6 +273,13 @@ public final class ResourceHost {
             }
         });
         return entries;
+    }
+
+    /** A reversed copy (Java 17 has no List.reversed). */
+    private static <T> List<T> reversed(java.util.Collection<T> items) {
+        List<T> copy = new ArrayList<>(items);
+        java.util.Collections.reverse(copy);
+        return copy;
     }
 
     /** Every game tick: wakes timers that are due. */

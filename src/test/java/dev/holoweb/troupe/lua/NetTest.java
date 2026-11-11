@@ -168,7 +168,7 @@ class NetTest {
                         see(select(2, pcall(function() state.player.saldo = 1 end)))
                         net.emit('dinheiro')""");
         startBoth("hud");
-        assertEquals(50L, server.getFirst());
+        assertEquals(50L, server.get(0));
         assertEquals(12L, client.get(0));
         assertTrue(client.get(1).toString().contains("read-only"), client.get(1).toString());
         assertEquals("saldo 50", client.get(2));
@@ -218,7 +218,7 @@ class NetTest {
                 see(select(2, pcall(coroutine.wrap(function() timer.wait(1) end))))
                 async(function() coroutine.yield() end)""");
         clientHost.start("t");
-        assertTrue(client.getFirst().toString().contains("can't wait inside coroutine"), client.getFirst().toString());
+        assertTrue(client.get(0).toString().contains("can't wait inside coroutine"), client.get(0).toString());
         for (int i = 0; i < 6; i++) advance(25);
         assertEquals(List.of("every 1", "after", "every 2", "every 3"), client.subList(1, client.size()));
         advance(200);

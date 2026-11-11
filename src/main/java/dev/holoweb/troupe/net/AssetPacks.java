@@ -11,6 +11,7 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.zip.ZipEntry;
@@ -26,14 +27,21 @@ public final class AssetPacks {
 
     /** @return the zip in {@code dir}, or null when the resource has no assets */
     public static Path build(Manifest m, String resource, Path cache, Path dir, String packMcmeta) throws IOException {
-        Map<String, Integer> files = m.resources().get(resource);
+        return build(m, List.of(resource), cache, dir, packMcmeta);
+    }
+
+    /** Several resources in one pack (a later one wins a path both have). Null when none has assets. */
+    public static Path build(Manifest m, List<String> resources, Path cache, Path dir, String packMcmeta) throws IOException {
         Map<String, String> assets = new TreeMap<>(); // path → sha
-        if (files != null) files.forEach((path, blob) -> {
-            if (path.startsWith("assets/")) assets.put(path, m.blobs().get(blob).sha256());
-        });
+        for (String resource : resources) {
+            Map<String, Integer> files = m.resources().get(resource);
+            if (files != null) files.forEach((path, blob) -> {
+                if (path.startsWith("assets/")) assets.put(path, m.blobs().get(blob).sha256());
+            });
+        }
         if (assets.isEmpty()) return null;
 
-        String id = sha256(resource + "\n" + packMcmeta + "\n" + assets);
+        String id = sha256(resources + "\n" + packMcmeta + "\n" + assets);
         Path zip = dir.resolve(id + ".zip");
         if (Files.isRegularFile(zip)) return zip;
         Files.createDirectories(dir);

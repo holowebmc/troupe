@@ -104,6 +104,6 @@ class HotReloadTest {
         publish.run();
         pump();
         assertTrue(clientHost.isRunning("hud"));
-        assertEquals("v2", client.getLast());
+        assertEquals("v2", client.get(client.size() - 1));
     }
 }
