@@ -48,6 +48,7 @@ public final class ResourceHost {
     private final ModuleRegistry modules;
     private Network network = Network.NONE;
     private UiBackend ui;
+    private List<String> javaAllow = List.of();
     private final List<java.util.function.Consumer<String>> stopListeners = new ArrayList<>();
     private final List<java.util.function.Consumer<String>> startListeners = new ArrayList<>();
     private Map<String, Entry> available = Map.of();
@@ -103,6 +104,15 @@ public final class ResourceHost {
     /** Built-in modules hear when a resource has started (its main.lua ran up to its first wait). */
     public void onStart(java.util.function.Consumer<String> listener) {
         startListeners.add(listener);
+    }
+
+    List<String> javaAllow() {
+        return javaAllow;
+    }
+
+    /** Server: packages and classes resources may reach through {@code java.*} (empty: off). Before resources start. */
+    public void setJavaAllow(List<String> allow) {
+        javaAllow = List.copyOf(allow);
     }
 
     UiBackend ui() {

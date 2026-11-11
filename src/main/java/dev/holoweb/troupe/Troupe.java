@@ -81,6 +81,7 @@ public final class Troupe implements ModInitializer {
 
         ServerLifecycleEvents.SERVER_STARTING.register(s -> {
             server = s;
+            host.setJavaAllow(javaAllow());
             rescan(s);
         });
         ServerLifecycleEvents.SERVER_STARTED.register(s -> {
@@ -189,6 +190,34 @@ public final class Troupe implements ModInitializer {
         Map<String, ResourceHost.Entry> entries = ResourceHost.entries(resources);
         host.setAvailable(entries);
         LOG.info("{} resources, {} with client files: {}", entries.size(), resources.manifest().resources().size(), entries.keySet());
+    }
+
+    /**
+     * {@code config/troupe.json} → {@code java.allow}: the packages server resources may use through {@code java.*}.
+     * Written with an empty list (off) the first time.
+     */
+    private static java.util.List<String> javaAllow() {
+        Path file = FabricLoader.getInstance().getConfigDir().resolve("troupe.json");
+        try {
+            if (!Files.exists(file)) {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, """
+                        {
+                          // Packages (or classes) server resources may reach with java.class / java.new, e.g.
+                          // "com.simibubi.create.api". Empty: java.* is off. Only for code you trust: it runs as the server.
+                          "java": { "allow": [] }
+                        }
+                        """);
+            }
+            var root = com.google.gson.JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+            java.util.List<String> allow = new java.util.ArrayList<>();
+            if (root.has("java")) for (var e : root.getAsJsonObject("java").getAsJsonArray("allow")) allow.add(e.getAsString());
+            if (!allow.isEmpty()) LOG.warn("java.* is on for server resources: {}", allow);
+            return allow;
+        } catch (IOException | RuntimeException e) {
+            LOG.error("Couldn't read {}; java.* stays off", file, e);
+            return java.util.List.of();
+        }
     }
 
     /** Tells connected clients when what runs changed (started, stopped, restarted). */

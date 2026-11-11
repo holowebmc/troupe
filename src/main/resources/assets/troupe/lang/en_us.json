@@ -1,4 +1,6 @@
 {
   "troupe.disconnect.missing_mod": "This server needs the Troupe mod.",
-  "troupe.disconnect.sync_failed": "Troupe: %s"
+  "troupe.disconnect.sync_failed": "Troupe: %s",
+  "troupe.assets.title": "This server's resources have textures and sounds",
+  "troupe.assets.question": "Apply them? (like a server resource pack)"
 }

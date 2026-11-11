@@ -164,6 +164,7 @@ public final class LuaRuntime {
             g.rawset(m.name(), table);
         }
         ui = side == Side.CLIENT ? new UiApi(this, g, host.ui(), files) : null;
+        if (side == Side.SERVER) new JavaApi(this, g, host.javaAllow()); // never on the client
 
         LuaTable hostApi = RegisteredFunction.bind(new RegisteredFunction[]{
                 RegisteredFunction.of("in_task", s -> ValueFactory.valueOf(current != null && state.getCurrentThread() == current.thread)),

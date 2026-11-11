@@ -32,6 +32,7 @@ public final class TroupeClient implements ClientModInitializer {
     private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/cache");
     private static final ResourceHost host = new ResourceHost(Side.CLIENT, task -> Minecraft.getInstance().execute(task));
     private static final ClientApi api = new ClientApi(host.modules());
+    private static final ClientAssets assets = new ClientAssets(CACHE);
 
     // Written on the Netty thread (Fabric runs configuration receivers there), read from the render thread.
     private static volatile ClientSync sync;
@@ -92,6 +93,7 @@ public final class TroupeClient implements ClientModInitializer {
             if (link != null) link.close();
             link = null;
             host.stopAll();
+            assets.clear();
             host.setNetwork(null);
             host.resetState();
         }));
@@ -114,6 +116,7 @@ public final class TroupeClient implements ClientModInitializer {
     private static void startResources() {
         Manifest m = manifest;
         host.apply(ResourceHost.entries(m, CACHE), m.generations());
+        assets.apply(m);
     }
 
     /** The server's running resources changed while we're in the world; the files are in the cache already. */
@@ -121,6 +124,7 @@ public final class TroupeClient implements ClientModInitializer {
         Troupe.LOG.info("Server resources changed: {}", m.generations());
         manifest = m;
         host.apply(ResourceHost.entries(m, CACHE), m.generations());
+        assets.apply(m);
     }
 
     private static void reset() {
