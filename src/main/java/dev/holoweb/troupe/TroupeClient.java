@@ -46,6 +46,8 @@ public final class TroupeClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         Troupe.registerModules(host.modules());
+        if (FabricLoader.getInstance().isModLoaded("vitrine")) host.setUi(VitrineUi.create());
+        else Troupe.LOG.info("Vitrine isn't installed: resource pages (ui.*) won't open");
 
         ClientConfigurationConnectionEvents.INIT.register((handler, client) -> {
             reset();

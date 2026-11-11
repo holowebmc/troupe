@@ -47,6 +47,7 @@ public final class ResourceHost {
     private final LongSupplier clock;
     private final ModuleRegistry modules;
     private Network network = Network.NONE;
+    private UiBackend ui;
     private Map<String, Entry> available = Map.of();
     private final LinkedHashMap<String, Running> running = new LinkedHashMap<>();
     // resource → key → json. On the client the player map has a single player, "".
@@ -88,6 +89,15 @@ public final class ResourceHost {
 
     public void setNetwork(Network network) {
         this.network = network == null ? Network.NONE : network;
+    }
+
+    UiBackend ui() {
+        return ui;
+    }
+
+    /** Client: where {@code ui.*} pages go; null (no Vitrine) makes them errors. Set before resources start. */
+    public void setUi(UiBackend ui) {
+        this.ui = ui;
     }
 
     /** Replaces what can be started; running resources keep the version they started with. */

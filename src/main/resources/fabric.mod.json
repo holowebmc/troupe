@@ -15,5 +15,8 @@
 		"minecraft": "${minecraft}",
 		"java": ">=${java}",
 		"fabric-api": "*"
+	},
+	"recommends": {
+		"vitrine": ">=0.2.0"
 	}
 }

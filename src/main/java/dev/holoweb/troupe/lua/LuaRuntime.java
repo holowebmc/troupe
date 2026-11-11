@@ -107,6 +107,7 @@ public final class LuaRuntime {
     private final LuaState state;
     private final LuaTable token = new LuaTable();
     final NetApi net;
+    private final UiApi ui; // client only
 
     private volatile long deadline; // System.nanoTime() limit of the running step, 0 when idle
     private boolean timedOut;
@@ -149,6 +150,7 @@ public final class LuaRuntime {
                 }),
         }));
         net = new NetApi(this, g);
+        ui = side == Side.CLIENT ? new UiApi(this, g, host.ui(), files) : null;
 
         LuaTable hostApi = RegisteredFunction.bind(new RegisteredFunction[]{
                 RegisteredFunction.of("in_task", s -> ValueFactory.valueOf(current != null && state.getCurrentThread() == current.thread)),
@@ -205,6 +207,7 @@ public final class LuaRuntime {
         for (Task t : dropped) drop(t);
         listeners.clear();
         net.close();
+        if (ui != null) ui.close();
         ACTIVE.remove(this);
     }
 
