@@ -1,0 +1,4 @@
+{
+  "troupe.disconnect.missing_mod": "This server needs the Troupe mod.",
+  "troupe.disconnect.sync_failed": "Troupe: %s"
+}
