@@ -6,6 +6,9 @@ import com.mojang.brigadier.context.CommandContext;
 import dev.holoweb.troupe.api.Modules;
 import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.api.TroupeModule;
+import dev.holoweb.troupe.lua.Link;
+import dev.holoweb.troupe.lua.Links;
+import dev.holoweb.troupe.lua.Peer;
 import dev.holoweb.troupe.lua.ResourceHost;
 import dev.holoweb.troupe.lua.ResourceHost.ResourceException;
 import dev.holoweb.troupe.net.ProtocolException;
@@ -15,10 +18,13 @@ import dev.holoweb.troupe.net.ServerSync;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -26,6 +32,7 @@ import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ConfigurationTask;
 import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import org.slf4j.Logger;
@@ -51,6 +58,7 @@ public final class Troupe implements ModInitializer {
         MinecraftServer s = server;
         if (s != null) s.execute(task);
     });
+    private static final Links links = new Links(host);
     private static volatile ServerResources resources = ServerResources.EMPTY;
     private static final Map<ServerConfigurationPacketListenerImpl, ServerSync> syncs = new ConcurrentHashMap<>();
 
@@ -58,6 +66,9 @@ public final class Troupe implements ModInitializer {
     public void onInitialize() {
         PayloadTypeRegistry.clientboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
         PayloadTypeRegistry.serverboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
+        host.setNetwork(links);
         registerModules(host.modules());
 
         ServerLifecycleEvents.SERVER_STARTING.register(s -> {
@@ -67,6 +78,7 @@ public final class Troupe implements ModInitializer {
         ServerLifecycleEvents.SERVER_STARTED.register(s -> host.startAll());
         ServerLifecycleEvents.SERVER_STOPPING.register(s -> host.stopAll());
         ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
+        ServerTickEvents.END_SERVER_TICK.register(s -> host.tick());
         CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) -> dispatcher.register(command()));
 
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
@@ -100,6 +112,28 @@ public final class Troupe implements ModInitializer {
         ServerConfigurationConnectionEvents.DISCONNECT.register((handler, s) -> {
             ServerSync sync = syncs.remove(handler);
             if (sync != null) sync.close();
+        });
+
+        // Play phase: one Link per player with Troupe. Play receivers run on the server thread.
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
+            ServerPlayer player = handler.player;
+            if (!ServerPlayNetworking.canSend(player, TroupePayload.TYPE)) return;
+            Peer peer = new Peer(player.getUUID().toString(), player.getGameProfile().name());
+            links.add(new Link(host, peer, bytes -> ServerPlayNetworking.send(player, new TroupePayload(bytes))));
+        });
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
+            String id = handler.player.getUUID().toString();
+            s.execute(() -> links.remove(id));
+        });
+        ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
+            Link link = links.get(ctx.player().getUUID().toString());
+            if (link == null) return;
+            try {
+                link.receive(payload.data());
+            } catch (ProtocolException e) {
+                LOG.warn("Troupe protocol error from {}: {}", ctx.player().getGameProfile().name(), e.getMessage());
+                ctx.player().connection.disconnect(Component.literal("Troupe: " + e.getMessage()));
+            }
         });
     }
 

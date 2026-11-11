@@ -1,6 +1,7 @@
 package dev.holoweb.troupe;
 
 import dev.holoweb.troupe.api.Side;
+import dev.holoweb.troupe.lua.Link;
 import dev.holoweb.troupe.lua.ResourceHost;
 import dev.holoweb.troupe.net.ClientSync;
 import dev.holoweb.troupe.net.Protocol;
@@ -9,7 +10,9 @@ import dev.holoweb.troupe.net.ResourceInfo;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
@@ -33,6 +36,8 @@ public final class TroupeClient implements ClientModInitializer {
     private static volatile ClientSync sync;
     /** Resources of the server we are on (empty when it has none). */
     private static volatile Manifest manifest = Manifest.EMPTY;
+    /** The play connection to the server; render thread only. */
+    private static Link link;
 
     public static Manifest manifest() {
         return manifest;
@@ -65,8 +70,29 @@ public final class TroupeClient implements ClientModInitializer {
             }
         });
 
-        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> client.execute(TroupeClient::startResources));
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(host::stopAll));
+        // INIT comes before any play packet, and its task is queued ahead of their handling on the render thread.
+        // The resources start when the server says START (after it sent the global state).
+        ClientPlayConnectionEvents.INIT.register((handler, client) -> client.execute(() -> {
+            link = new Link(host, bytes -> ClientPlayNetworking.send(new TroupePayload(bytes)), TroupeClient::startResources);
+            host.setNetwork(link);
+        }));
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
+            if (link != null) link.close();
+            link = null;
+            host.stopAll();
+            host.setNetwork(null);
+            host.resetState();
+        }));
+        ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
+            if (link == null) return;
+            try {
+                link.receive(payload.data());
+            } catch (IOException e) {
+                Troupe.LOG.warn("Troupe protocol error from the server: {}", e.getMessage());
+                ctx.player().connection.getConnection().disconnect(Component.literal("Troupe: " + e.getMessage()));
+            }
+        });
+        ClientTickEvents.END_CLIENT_TICK.register(client -> host.tick());
     }
 
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */

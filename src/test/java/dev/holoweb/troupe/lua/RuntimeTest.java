@@ -91,7 +91,7 @@ class RuntimeTest {
     void runawayScriptIsStoppedEvenInsidePcall() throws Exception {
         long t0 = System.nanoTime();
         ResourceException e = assertThrows(ResourceException.class, () -> run("while true do pcall(function() while true do end end) end"));
-        assertTrue(e.getMessage().contains("without returning"), e.getMessage());
+        assertTrue(e.getMessage().contains("without waiting or returning"), e.getMessage());
         assertTrue((System.nanoTime() - t0) / 1e6 < LuaRuntime.TIME_LIMIT_MS + 1500);
     }
 

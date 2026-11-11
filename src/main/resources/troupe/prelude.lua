@@ -1,5 +1,17 @@
 -- Runs first in every resource state. Its locals stay invisible to resource code.
-local load_module = ...
+local load_module, host = ...
+local yield, pack, unpack = coroutine.yield, table.pack, table.unpack
+local TOKEN = host.token
+
+-- Hands the current task to the host until it has an answer (timer, network, another resource). Works anywhere in a
+-- task started by Troupe (main.lua, handlers, async), but not inside a coroutine made with coroutine.create/wrap.
+local function await(kind, ...)
+  if not host.in_task() then error(kind .. " can't wait inside coroutine.create/wrap (use async)", 3) end
+  local r = pack(yield(TOKEN, kind, ...))
+  if not r[1] then error(r[2], 3) end
+  return unpack(r, 2, r.n)
+end
+
 local loaded, loading = {}, {}
 
 -- require('shared.config') loads shared/config.lua of this resource, once.
@@ -17,4 +29,40 @@ function require(name)
   if result == nil then result = true end
   loaded[name] = result
   return result
+end
+
+-- async(fn, ...) runs fn as a task of its own, after the current one yields or ends.
+async = host.spawn
+
+timer = {}
+function timer.wait(ms) await("wait", ms) end
+
+local cancelled, next_id = {}, 0
+local function start_timer(ms, fn, every)
+  if type(fn) ~= "function" then error("bad argument #2 (function expected, got " .. type(fn) .. ")", 3) end
+  next_id = next_id + 1
+  local id = next_id
+  async(function()
+    repeat
+      timer.wait(ms)
+      if cancelled[id] then break end
+      fn()
+    until not every
+    cancelled[id] = nil
+  end)
+  return id
+end
+function timer.after(ms, fn) return start_timer(ms, fn, false) end
+function timer.every(ms, fn) return start_timer(ms, fn, true) end
+function timer.cancel(id) cancelled[id] = true end
+
+-- net.handle / net.emit (and net.broadcast on the server) come from Java; calls wait for the reply.
+function net.call(...) return await("call", ...) end
+
+-- resource('banco').sacar(10) calls what banco's main.lua returned, in banco's own state, and waits for it.
+function resource(name)
+  if type(name) ~= "string" then error("bad argument #1 to 'resource' (string expected, got " .. type(name) .. ")", 2) end
+  return setmetatable({}, { __index = function(_, fn)
+    return function(...) return await("export", name, fn, ...) end
+  end })
 end

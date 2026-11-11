@@ -24,6 +24,15 @@ import java.util.regex.Pattern;
  * client → server
  *   WANT      varint version, bitmap of the blobs the client lacks (bit i = blob i, LSB first)
  *   READY     every wanted blob is in the client cache
+ *
+ * play phase, both directions (json: arguments or result, UTF-8 JSON text)
+ *   EVENT     string resource, string name, text json
+ *   CALL      varint id, string resource, string name, text json
+ *   REPLY     varint id, u8 ok, text json (the result, or the error message as a JSON string)
+ * play phase, server → client only
+ *   STATE     string resource, u8 global, string key, text json ("" removes the key)
+ *   CLEAR     string resource (it stopped on the server: drop its state)
+ *   START     the global state has been sent: start the resources now
  * </pre>
  */
 public final class Protocol {
@@ -32,6 +41,11 @@ public final class Protocol {
 
     public static final int MANIFEST = 0, CHUNK = 1; // server → client
     public static final int WANT = 0, READY = 1;     // client → server
+    public static final int EVENT = 2, CALL = 3, REPLY = 4; // play phase, both ways
+    public static final int STATE = 5, CLEAR = 6, START = 7; // play phase, server → client
+
+    /** JSON budget of one message: serverbound custom payloads are capped at 32 KiB, clientbound at 1 MiB. */
+    public static final int MAX_JSON_TO_SERVER = 30 * 1024, MAX_JSON_TO_CLIENT = 1000 * 1024;
 
     /** Well below the 1 MiB clientbound custom payload limit. */
     public static final int CHUNK_SIZE = 256 * 1024;
@@ -155,6 +169,11 @@ public final class Protocol {
             return varint(b.length).bytes(b);
         }
 
+        public Out bool(boolean b) {
+            buf.write(b ? 1 : 0);
+            return this;
+        }
+
         public byte[] toByteArray() {
             return buf.toByteArray();
         }
@@ -216,9 +235,17 @@ public final class Protocol {
         }
 
         public String string() throws ProtocolException {
+            return text(1024);
+        }
+
+        public String text(int maxBytes) throws ProtocolException {
             int n = varint();
-            if (n > 1024) throw new ProtocolException("string too long");
+            if (n > maxBytes) throw new ProtocolException("string too long");
             return new String(bytes(n), StandardCharsets.UTF_8);
+        }
+
+        public boolean bool() throws ProtocolException {
+            return u8() != 0;
         }
 
         public void end() throws ProtocolException {
