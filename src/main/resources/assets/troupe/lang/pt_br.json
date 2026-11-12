@@ -7,5 +7,7 @@
   "troupe.loading.checking": "Conferindo arquivos",
   "troupe.loading.download": "Baixando %s de %s arquivos (%s / %s)",
   "troupe.loading.assets": "Carregando texturas e sons",
-  "troupe.loading.cancelled": "Cancelado"
+  "troupe.loading.cancelled": "Cancelado",
+  "troupe.badge.title": "Troupe: %s resources, %s",
+  "troupe.badge.incompatible": "Outra versão do Troupe (protocolo do servidor %s, deste cliente %s)"
 }

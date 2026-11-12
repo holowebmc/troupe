@@ -67,6 +67,7 @@ public final class Troupe implements ModInitializer {
     @Override
     public void onInitialize() {
         ConfigPhase.register(() -> published, configured);
+        TroupeStatus.serve(() -> published.manifest());
         host.setNetwork(links);
         registerModules(host.modules());
 

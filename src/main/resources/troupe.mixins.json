@@ -1,0 +1,8 @@
+{
+	"required": true,
+	"package": "dev.holoweb.troupe.mixin",
+	"compatibilityLevel": "JAVA_${java}",
+	"mixins": ["ServerStatusMixin"],
+	"client": ["ServerStatusPingerMixin", "OnlineServerEntryMixin"],
+	"injectors": { "defaultRequire": 1 }
+}

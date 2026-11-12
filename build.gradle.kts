@@ -78,6 +78,6 @@ tasks {
             "loader" to project.property("deps.fabric_loader"),
         )
         inputs.properties(props)
-        filesMatching("fabric.mod.json") { expand(props) }
+        filesMatching(listOf("fabric.mod.json", "*.mixins.json")) { expand(props) }
     }
 }
