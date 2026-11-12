@@ -109,6 +109,8 @@ public final class LuaRuntime {
     private final LuaTable token = new LuaTable();
     /** Methods of player handles on the server; the prelude fills it ({@code player:message(...)}). */
     final LuaTable playerMethods = new LuaTable();
+    /** Methods of entity handles ({@link EntityRef}); the prelude fills it ({@code entity:pos()}). */
+    final LuaTable entityMethods = new LuaTable();
     final NetApi net;
     private final UiApi ui; // client only
 
@@ -176,6 +178,7 @@ public final class LuaRuntime {
         });
         hostApi.rawset("token", token);
         hostApi.rawset("player_methods", playerMethods);
+        hostApi.rawset("entity_methods", entityMethods);
         String[] failure = new String[1];
         try (InputStream prelude = LuaRuntime.class.getResourceAsStream("/troupe/prelude.lua")) {
             LuaFunction chunk = LoadState.load(state, prelude, "=troupe", g);
@@ -388,6 +391,32 @@ public final class LuaRuntime {
             return;
         }
         for (LuaFunction fn : List.copyOf(fns)) spawn(fn, luaArgs, "event " + module + "." + event, null);
+    }
+
+    boolean listens(String module, String event) {
+        return listeners.containsKey(module + "\0" + event);
+    }
+
+    /**
+     * Runs the handlers now, one after another; any that returns {@code false} cancels. A handler that waits
+     * ({@code timer.wait}...) goes on later and doesn't cancel. Errors are logged and don't cancel either.
+     */
+    boolean dispatchCancellable(String module, String event, Object[] args) {
+        List<LuaFunction> fns = listeners.get(module + "\0" + event);
+        if (fns == null) return true;
+        Varargs luaArgs;
+        try {
+            luaArgs = toLuaArgs(args);
+        } catch (LuaError e) {
+            LOG.error("[{}] event {}.{}: {}", name, module, event, Values.readable(e.getMessage()));
+            return true;
+        }
+        boolean[] allowed = {true};
+        for (LuaFunction fn : List.copyOf(fns)) spawn(fn, luaArgs, "event " + module + "." + event, (err, results) -> {
+            if (err != null) LOG.error("[{}] event {}.{}: {}", name, module, event, err);
+            else if (results.first() == Constants.FALSE) allowed[0] = false;
+        });
+        return allowed[0];
     }
 
     Callback callback(LuaFunction fn) {

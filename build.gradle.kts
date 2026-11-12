@@ -12,6 +12,9 @@ stonecutter.replacements {
         regex(below(since)) { replace("\\b$new\\b", old, "\\b$old\\b", new) }
 
     renameWord("1.21.11", "Identifier", "ResourceLocation")
+    // Fabric API took Mojang's "level" names in 26.1
+    renameWord("26.1", "ServerEntityLevelChangeEvents", "ServerEntityWorldChangeEvents")
+    renameWord("26.1", "AFTER_PLAYER_CHANGE_LEVEL", "AFTER_PLAYER_CHANGE_WORLD")
 }
 
 version = "${property("mod.version")}+${stonecutter.current.version}"
@@ -76,6 +79,8 @@ tasks {
             "minecraft" to project.property("mod.mc_dep"),
             "java" to javaVersion.majorVersion,
             "loader" to project.property("deps.fabric_loader"),
+            // Mixins whose targets exist only on some versions.
+            "client_mixins" to if (below("1.20.3")) "" else ", \"DownloadedPackSourceMixin\"",
         )
         inputs.properties(props)
         filesMatching(listOf("fabric.mod.json", "*.mixins.json")) { expand(props) }

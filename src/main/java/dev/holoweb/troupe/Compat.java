@@ -124,4 +124,56 @@ final class Compat {
         //?} else
         /*return e.teleportTo(level, x, y, z, java.util.Set.of(), e.getYRot(), e.getXRot());*/
     }
+
+    static net.minecraft.world.entity.ai.attributes.AttributeInstance attribute(net.minecraft.world.entity.LivingEntity e, net.minecraft.world.entity.ai.attributes.Attribute attribute) {
+        //? if >=1.20.5 {
+        return e.getAttribute(net.minecraft.core.registries.BuiltInRegistries.ATTRIBUTE.wrapAsHolder(attribute));
+        //?} else
+        /*return e.getAttribute(attribute);*/
+    }
+
+    static void syncMotion(net.minecraft.world.entity.Entity e) {
+        //? if >=26.1 {
+        e.syncVelocity = true;
+        //?} else
+        /*e.hurtMarked = true;*/
+    }
+
+    // ---- scoreboard, teams, bossbars (ScoreApi)
+
+    /** A sidebar objective (no score numbers where the game can hide them, 1.20.3+). */
+    static net.minecraft.world.scores.Objective sidebar(net.minecraft.world.scores.Scoreboard board, String name, net.minecraft.network.chat.Component title) {
+        var dummy = net.minecraft.world.scores.criteria.ObjectiveCriteria.DUMMY;
+        var integer = net.minecraft.world.scores.criteria.ObjectiveCriteria.RenderType.INTEGER;
+        //? if >=1.20.3 {
+        var o = board.addObjective(name, dummy, title, integer, false, net.minecraft.network.chat.numbers.BlankFormat.INSTANCE);
+        board.setDisplayObjective(net.minecraft.world.scores.DisplaySlot.SIDEBAR, o);
+        //?} else {
+        /*var o = board.addObjective(name, dummy, title, integer);
+        board.setDisplayObjective(1, o); // the sidebar slot
+        *///?}
+        return o;
+    }
+
+    static void score(net.minecraft.world.scores.Scoreboard board, net.minecraft.world.scores.Objective o, String holder, int value) {
+        //? if >=1.20.3 {
+        board.getOrCreatePlayerScore(net.minecraft.world.scores.ScoreHolder.forNameOnly(holder), o).set(value);
+        //?} else
+        /*board.getOrCreatePlayerScore(holder, o).setScore(value);*/
+    }
+
+    /** {@code color}: a chat color name ("red", "dark_aqua"...), or null for none. */
+    static void teamColor(net.minecraft.world.scores.PlayerTeam team, String color) {
+        //? if >=26.1 {
+        team.setColor(color == null ? java.util.Optional.empty() : java.util.Optional.of(net.minecraft.world.scores.TeamColor.valueOf(color.toUpperCase(java.util.Locale.ROOT))));
+        //?} else
+        /*team.setColor(color == null ? net.minecraft.ChatFormatting.RESET : net.minecraft.ChatFormatting.valueOf(color.toUpperCase(java.util.Locale.ROOT)));*/
+    }
+
+    static net.minecraft.server.level.ServerBossEvent bossBar(net.minecraft.network.chat.Component name, net.minecraft.world.BossEvent.BossBarColor color, net.minecraft.world.BossEvent.BossBarOverlay overlay) {
+        //? if >=26.1 {
+        return new net.minecraft.server.level.ServerBossEvent(java.util.UUID.randomUUID(), name, color, overlay);
+        //?} else
+        /*return new net.minecraft.server.level.ServerBossEvent(name, color, overlay);*/
+    }
 }

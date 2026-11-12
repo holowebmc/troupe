@@ -2,7 +2,7 @@
 	"required": true,
 	"package": "dev.holoweb.troupe.mixin",
 	"compatibilityLevel": "JAVA_${java}",
-	"mixins": ["ServerStatusMixin"],
-	"client": ["ServerStatusPingerMixin", "OnlineServerEntryMixin"],
+	"mixins": ["ServerStatusMixin", "BlockItemMixin"],
+	"client": ["ServerStatusPingerMixin", "OnlineServerEntryMixin"${client_mixins}],
 	"injectors": { "defaultRequire": 1 }
 }

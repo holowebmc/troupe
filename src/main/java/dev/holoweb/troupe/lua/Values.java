@@ -93,6 +93,15 @@ final class Values {
         if (o instanceof Number n) return ValueFactory.valueOf(n.doubleValue());
         if (o instanceof CharSequence s) return lua(s.toString());
         if (o instanceof Peer p) return runtime.net.player(p);
+        if (o instanceof EntityRef e) {
+            LuaTable t = new LuaTable();
+            t.rawset("id", lua(e.id()));
+            t.rawset("type", lua(e.type()));
+            LuaTable meta = new LuaTable();
+            meta.rawset("__index", runtime.entityMethods);
+            t.setMetatable(null, meta);
+            return t;
+        }
         if (o instanceof LuaRuntime.LuaCallback c) {
             if (c.runtime() != runtime) throw new LuaError("a function from another resource can't be passed here");
             return c.function();

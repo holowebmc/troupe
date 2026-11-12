@@ -44,7 +44,7 @@ import java.util.regex.Pattern;
  *   player:mods() → the mod modules on their client (mods.* there)   player:has_mod(name)
  * chat.broadcast(text)  chat.on_message(fn(player, text))
  * command.register(name, fn(player|nil, args), { admin = false })
- * world.block(x, y, z, dim?) → id | nil    world.set_block(x, y, z, id, dim?) → ok   (loaded chunks only)
+ * world.block(x, y, z, dim?) → id | nil    world.set_block(x, y, z, id, dim?, { facing = "north" }?) → ok   (loaded chunks only)
  * store.get(key)  store.set(key, value)  store.delete(key)  store.keys()     (per resource, kept on disk)
  * </pre>
  * Server thread only, like everything a module function does.
@@ -59,6 +59,7 @@ final class ServerApi {
     /** Command nodes we added; they survive their resource (see {@link #register}). */
     private final Set<String> ownNodes = new java.util.HashSet<>();
     private Store store;
+    private GameApi game;
     private final Module players, chat;
 
     ServerApi(ModuleRegistry modules, ResourceHost host, Supplier<MinecraftServer> server) {
@@ -85,6 +86,8 @@ final class ServerApi {
                     pos.put("y", v.y);
                     pos.put("z", v.z);
                     pos.put("dim", Compat.dimension(Compat.level(p)));
+                    pos.put("yaw", (double) p.getYRot());
+                    pos.put("pitch", (double) p.getXRot());
                     return pos;
                 })
                 .function("teleport", a -> {
@@ -92,13 +95,7 @@ final class ServerApi {
                     ServerLevel level = a.get(4) == null ? Compat.level(p) : level(a.string(4));
                     return Compat.teleport(p, level, a.number(1), a.number(2), a.number(3));
                 })
-                .function("give", a -> {
-                    var item = BuiltInRegistries.ITEM.getOptional(id(a.string(1)))
-                            .orElseThrow(() -> new IllegalArgumentException("unknown item '" + a.string(1) + "'"));
-                    long count = a.get(2) == null ? 1 : a.integer(2);
-                    if (count < 1 || count > 64 * 36) throw new IllegalArgumentException("count must be 1.." + 64 * 36);
-                    return player(a).addItem(new ItemStack(item, (int) count));
-                })
+                .function("give", a -> player(a).addItem(game.stack(a.get(1), a.get(2), true)))
                 .event("join").event("leave");
 
         // A resource that (re)starts with players online gets on_join for each of them, as if they had just joined:
@@ -133,7 +130,8 @@ final class ServerApi {
                             .orElseThrow(() -> new IllegalArgumentException("unknown block '" + a.string(3) + "'"));
                     ServerLevel level = level(a, 4);
                     BlockPos pos = pos(a);
-                    return level.isLoaded(pos) && level.setBlock(pos, block.defaultBlockState(), Block.UPDATE_ALL);
+                    var state = GameApi.state(block, a.get(5) == null ? Map.of() : a.table(5));
+                    return level.isLoaded(pos) && level.setBlock(pos, state, Block.UPDATE_ALL);
                 });
 
         modules.global("store")
@@ -148,7 +146,9 @@ final class ServerApi {
                 })
                 .function("keys", a -> store().keys(a.resource()));
 
-        new GameApi(modules, this);
+        game = new GameApi(modules, this);
+        new GameEvents(modules);
+        new ScoreApi(modules, host, this);
     }
 
     private final List<ServerPlayer> joining = new java.util.ArrayList<>();
@@ -174,6 +174,10 @@ final class ServerApi {
 
     static Peer peer(ServerPlayer p) {
         return new Peer(p.getUUID().toString(), Compat.name(p.getGameProfile()));
+    }
+
+    MinecraftServer serverOrNull() {
+        return server.get();
     }
 
     MinecraftServer server() {

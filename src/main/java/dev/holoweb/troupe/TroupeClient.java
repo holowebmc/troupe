@@ -40,6 +40,7 @@ public final class TroupeClient implements ClientModInitializer {
     private static final ResourceHost host = new ResourceHost(Side.CLIENT, task -> Minecraft.getInstance().execute(task));
     private static final ClientApi api = new ClientApi(host.modules());
     private static final ClientAssets assets = new ClientAssets(CACHE);
+    private static final ClientHud hud = new ClientHud(host.modules(), host);
 
     // Written on the Netty thread (Fabric runs configuration receivers there), read from the render thread.
     private static volatile ClientSync sync;
@@ -133,6 +134,11 @@ public final class TroupeClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
         //?} else
         /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
+        //? if >=1.21.6 {
+        net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
+                net.minecraft.resources.Identifier.fromNamespaceAndPath("troupe", "hud"), (gui, delta) -> hud.draw(gui));
+        //?} else
+        /*net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((gui, delta) -> hud.draw(gui));*/
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             api.tick();
             host.tick();

@@ -7,6 +7,7 @@ import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.net.Protocol;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -64,6 +65,25 @@ public final class ModuleRegistry implements Modules {
         executor.execute(() -> {
             for (LuaRuntime r : running.get()) if (r.name().equals(resource)) r.dispatch(m.name, event, copy);
         });
+    }
+
+    /** Whether any running resource handles {@code module.on_<event>}: skip building the arguments when none does. */
+    public boolean listens(Module module, String event) {
+        String m = module.name();
+        for (LuaRuntime r : running.get()) if (r.listens(m, event)) return true;
+        return false;
+    }
+
+    /**
+     * A cancellable event, on the calling (game) thread: every handler runs now and returning {@code false} from one
+     * cancels. @return true when nothing cancelled
+     */
+    public boolean emitCancellable(Module module, String event, Object... args) {
+        ModuleImpl m = (ModuleImpl) module;
+        if (!m.events.contains(event)) throw new IllegalArgumentException("module '" + m.name + "' has no event '" + event + "'");
+        boolean allowed = true;
+        for (LuaRuntime r : List.copyOf(running.get())) allowed &= r.dispatchCancellable(m.name, event, args.clone());
+        return allowed;
     }
 
     ModuleImpl find(String name) {

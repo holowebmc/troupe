@@ -36,6 +36,7 @@ final class ClientApi {
                     pos.put("y", v.y);
                     pos.put("z", v.z);
                     pos.put("yaw", (double) me().getYRot());
+                    pos.put("pitch", (double) me().getXRot());
                     return pos;
                 });
 

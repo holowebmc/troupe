@@ -1,6 +1,7 @@
 package dev.holoweb.troupe;
 
 import dev.holoweb.troupe.api.Args;
+import dev.holoweb.troupe.lua.EntityRef;
 import dev.holoweb.troupe.lua.ModuleRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
@@ -28,6 +29,14 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.Container;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -54,7 +63,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * time of day is ticks (0 sunrise, 6000 noon, 12000 sunset, 18000 midnight).
  */
 final class GameApi {
-    private static final int MAX_ENTITIES = 256, MAX_RADIUS = 128, MAX_PARTICLES = 1000;
+    private static final int MAX_ENTITIES = 256, MAX_RADIUS = 128, MAX_PARTICLES = 1000, MAX_FILL = 32768;
 
     private final ServerApi api;
 
@@ -64,6 +73,245 @@ final class GameApi {
         inventory(modules);
         entities(modules);
         world(modules);
+        blocks(modules);
+        advancedEntities(modules);
+    }
+
+    /** Functions for both entities.* and players.* (the first argument is an entity id or a player id). */
+    private interface OnEntity {
+        Object call(Entity e, Args a);
+    }
+
+    private void both(ModuleRegistry modules, String fn, OnEntity f) {
+        modules.global("entities").function(fn, a -> f.call(entity(a), a));
+        modules.global("players").function(fn, a -> f.call(api.player(a), a));
+    }
+
+    private void advancedEntities(ModuleRegistry modules) {
+        both(modules, "attribute", (e, a) -> {
+            var i = Compat.attribute(living(e), attribute(a.string(1)));
+            return i == null ? null : i.getValue();
+        });
+        both(modules, "set_attribute", (e, a) -> {
+            var i = Compat.attribute(living(e), attribute(a.string(1)));
+            if (i == null) throw new IllegalArgumentException("this entity has no " + a.string(1));
+            i.setBaseValue(a.number(2));
+            return null;
+        });
+        both(modules, "set_velocity", (e, a) -> {
+            e.setDeltaMovement(a.number(1), a.number(2), a.number(3));
+            Compat.syncMotion(e); // sends the new motion to clients (and to the player, for players)
+            return null;
+        });
+        both(modules, "glow", (e, a) -> {
+            e.setGlowingTag(a.optBool(1, true));
+            return null;
+        });
+        both(modules, "mount", (e, a) -> {
+            Entity vehicle = find(a.string(1));
+            if (vehicle == null) throw new IllegalArgumentException("vehicle isn't loaded");
+            return e.startRiding(vehicle);
+        });
+        both(modules, "dismount", (e, a) -> {
+            e.stopRiding();
+            return null;
+        });
+        both(modules, "vehicle", (e, a) -> e.getVehicle() == null ? null : who(e.getVehicle()));
+        both(modules, "passengers", (e, a) -> e.getPassengers().stream().map(GameApi::who).toList());
+
+        modules.global("entities")
+                .function("set_health", a -> {
+                    LivingEntity l = living(entity(a));
+                    l.setHealth((float) Math.max(0, Math.min(l.getMaxHealth(), a.number(1))));
+                    return null;
+                })
+                .function("equip", a -> {
+                    living(entity(a)).setItemSlot(slot(a.string(1)), a.get(2) == null ? ItemStack.EMPTY : stack(a.get(2), a.get(3), false));
+                    return null;
+                })
+                .function("equipment", a -> {
+                    LivingEntity l = living(entity(a));
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    for (String s : SLOTS) {
+                        Map<String, Object> item = item(l.getItemBySlot(slot(s)));
+                        if (item != null) out.put(s, item);
+                    }
+                    return out;
+                })
+                .function("effect", a -> {
+                    MobEffect effect = effect(a.string(1));
+                    double seconds = a.number(2);
+                    if (!(seconds > 0) || seconds > 1_000_000) throw new IllegalArgumentException("seconds must be > 0");
+                    long amplifier = a.get(3) == null ? 0 : a.integer(3);
+                    if (amplifier < 0 || amplifier > 255) throw new IllegalArgumentException("amplifier must be 0..255");
+                    return living(entity(a)).addEffect(Compat.effect(effect, (int) Math.round(seconds * 20), (int) amplifier, true));
+                })
+                .function("clear_effects", a -> {
+                    LivingEntity l = living(entity(a));
+                    if (a.get(1) == null) l.removeAllEffects();
+                    else Compat.removeEffect(l, effect(a.string(1)));
+                    return null;
+                })
+                .function("move_to", a -> {
+                    if (!(entity(a) instanceof Mob mob)) throw new IllegalArgumentException("only mobs walk to places");
+                    double speed = a.optNumber(4, 1);
+                    if (!(speed > 0) || speed > 4) throw new IllegalArgumentException("speed must be 0..4");
+                    return mob.getNavigation().moveTo(a.number(1), a.number(2), a.number(3), speed);
+                })
+                .function("set_ai", a -> {
+                    if (!(entity(a) instanceof Mob mob)) throw new IllegalArgumentException("only mobs have AI");
+                    mob.setNoAi(!a.bool(1));
+                    return null;
+                });
+    }
+
+    private static final List<String> SLOTS = List.of("head", "chest", "legs", "feet", "mainhand", "offhand");
+
+    private static EquipmentSlot slot(String name) {
+        if (!SLOTS.contains(name)) throw new IllegalArgumentException("slot is one of " + String.join(", ", SLOTS));
+        return EquipmentSlot.valueOf(name.toUpperCase(java.util.Locale.ROOT));
+    }
+
+    private static LivingEntity living(Entity e) {
+        if (!(e instanceof LivingEntity l)) throw new IllegalArgumentException("not a living entity");
+        return l;
+    }
+
+    private static net.minecraft.world.entity.ai.attributes.Attribute attribute(String id) {
+        return BuiltInRegistries.ATTRIBUTE.getOptional(ServerApi.id(id))
+                .orElseThrow(() -> new IllegalArgumentException("unknown attribute '" + id + "'"));
+    }
+
+    /** A player as a player handle, anything else as an entity handle. */
+    static Object who(Entity e) {
+        return e instanceof ServerPlayer p ? ServerApi.peer(p) : handle(e);
+    }
+
+    private void blocks(ModuleRegistry modules) {
+        modules.global("world")
+                .function("block_state", a -> {
+                    ServerLevel level = api.level(a, 3);
+                    BlockPos pos = BlockPos.containing(a.number(0), a.number(1), a.number(2));
+                    if (!level.isLoaded(pos)) return null;
+                    BlockState s = level.getBlockState(pos);
+                    Map<String, Object> props = new LinkedHashMap<>();
+                    for (Property<?> p : s.getProperties()) props.put(p.getName(), valueName(s, p));
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("id", BuiltInRegistries.BLOCK.getKey(s.getBlock()).toString());
+                    out.put("props", props);
+                    return out;
+                })
+                .function("fill", a -> {
+                    Block block = BuiltInRegistries.BLOCK.getOptional(ServerApi.id(a.string(6)))
+                            .orElseThrow(() -> new IllegalArgumentException("unknown block '" + a.string(6) + "'"));
+                    ServerLevel level = api.level(a, 7);
+                    BlockState state = state(block, a.get(8) == null ? Map.of() : a.table(8));
+                    BlockPos from = BlockPos.containing(a.number(0), a.number(1), a.number(2));
+                    BlockPos to = BlockPos.containing(a.number(3), a.number(4), a.number(5));
+                    long volume = (long) (Math.abs(from.getX() - to.getX()) + 1) * (Math.abs(from.getY() - to.getY()) + 1) * (Math.abs(from.getZ() - to.getZ()) + 1);
+                    if (volume > MAX_FILL) throw new IllegalArgumentException("too many blocks (" + volume + ", max " + MAX_FILL + ")");
+                    for (BlockPos p : BlockPos.betweenClosed(from, to)) if (!level.isLoaded(p)) throw new IllegalArgumentException("part of the region isn't loaded");
+                    long changed = 0;
+                    for (BlockPos p : BlockPos.betweenClosed(from, to)) if (level.setBlock(p, state, Block.UPDATE_ALL)) changed++;
+                    return changed;
+                })
+                .function("container", a -> {
+                    Container c = container(a, 3);
+                    if (c == null) return null;
+                    List<Object> out = new ArrayList<>();
+                    for (int i = 0; i < c.getContainerSize(); i++) {
+                        Map<String, Object> item = item(c.getItem(i));
+                        if (item == null) continue;
+                        item.put("slot", i);
+                        out.add(item);
+                    }
+                    return out;
+                })
+                .function("container_size", a -> {
+                    Container c = container(a, 3);
+                    return c == null ? null : c.getContainerSize();
+                })
+                .function("set_container_item", a -> {
+                    Container c = container(a, 6);
+                    if (c == null) throw new IllegalArgumentException("no container there");
+                    long slot = a.integer(3);
+                    if (slot < 0 || slot >= c.getContainerSize()) throw new IllegalArgumentException("slot must be 0.." + (c.getContainerSize() - 1));
+                    c.setItem((int) slot, a.get(4) == null ? ItemStack.EMPTY : stack(a.get(4), a.get(5), false));
+                    c.setChanged();
+                    return null;
+                });
+
+        modules.global("players").function("looking_at", a -> {
+            ServerPlayer p = api.player(a);
+            double reach = a.optNumber(1, 5);
+            if (!(reach > 0) || reach > 64) throw new IllegalArgumentException("distance must be 0..64");
+            if (!(p.pick(reach, 1, false) instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return null;
+            BlockPos pos = hit.getBlockPos();
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("x", pos.getX());
+            out.put("y", pos.getY());
+            out.put("z", pos.getZ());
+            out.put("id", BuiltInRegistries.BLOCK.getKey(Compat.level(p).getBlockState(pos).getBlock()).toString());
+            out.put("face", hit.getDirection().getName());
+            return out;
+        });
+    }
+
+    /** The block's default state with {@code props} ({@code {facing = 'north', lit = true}}) applied. */
+    static BlockState state(Block block, Map<String, Object> props) {
+        BlockState s = block.defaultBlockState();
+        for (Map.Entry<String, Object> e : props.entrySet()) {
+            Property<?> p = block.getStateDefinition().getProperty(e.getKey());
+            if (p == null) throw new IllegalArgumentException(BuiltInRegistries.BLOCK.getKey(block) + " has no property '" + e.getKey() + "'");
+            Object v = e.getValue();
+            if (v instanceof Double d && d == Math.rint(d)) v = d.longValue(); // Lua numbers: 3.0 → "3"
+            s = with(s, p, String.valueOf(v));
+        }
+        return s;
+    }
+
+    private static <T extends Comparable<T>> BlockState with(BlockState s, Property<T> p, String value) {
+        T v = p.getValue(value).orElseThrow(() -> new IllegalArgumentException("'" + value + "' isn't a value of " + p.getName()));
+        return s.setValue(p, v);
+    }
+
+    private static <T extends Comparable<T>> String valueName(BlockState s, Property<T> p) {
+        return p.getName(s.getValue(p));
+    }
+
+    private Container container(Args a, int dimArg) {
+        ServerLevel level = api.level(a, dimArg);
+        BlockPos pos = BlockPos.containing(a.number(0), a.number(1), a.number(2));
+        if (!level.isLoaded(pos)) return null;
+        return level.getBlockEntity(pos) instanceof Container c ? c : null;
+    }
+
+    /**
+     * An item from a script: an id, or {@code {id, count, name, lore, enchantments, damage, model}}. {@code count}
+     * (the argument) is used when the table has none; {@code anyCount} allows more than a stack (give splits it).
+     */
+    ItemStack stack(Object spec, Object count, boolean anyCount) {
+        String id;
+        Map<String, Object> details = null;
+        if (spec instanceof String s) {
+            id = s;
+        } else if (spec instanceof Map<?, ?> m) {
+            @SuppressWarnings("unchecked") Map<String, Object> d = (Map<String, Object>) m;
+            details = d;
+            if (!(d.get("id") instanceof String s)) throw new IllegalArgumentException("item table needs an id");
+            id = s;
+            if (d.get("count") != null) count = d.get("count");
+        } else {
+            throw new IllegalArgumentException("item expected (an id or { id = ... })");
+        }
+        Item item = item(id);
+        if (count != null && !(count instanceof Number)) throw new IllegalArgumentException("count must be a number");
+        long n = count == null ? 1 : ((Number) count).longValue();
+        int max = anyCount ? 64 * 36 : new ItemStack(item).getMaxStackSize();
+        if (n < 1 || n > max) throw new IllegalArgumentException("count must be 1.." + max);
+        ItemStack s = new ItemStack(item, (int) n);
+        if (details != null) ItemCompat.apply(s, details, api.server());
+        return s;
     }
 
     private void players(ModuleRegistry modules) {
@@ -170,15 +418,7 @@ final class GameApi {
                 .function("set_item", a -> {
                     ServerPlayer p = api.player(a);
                     int slot = slot(p, a.integer(1));
-                    ItemStack stack = ItemStack.EMPTY;
-                    if (a.get(2) != null) {
-                        Item item = item(a.string(2));
-                        long count = a.get(3) == null ? 1 : a.integer(3);
-                        int max = new ItemStack(item).getMaxStackSize();
-                        if (count < 1 || count > max) throw new IllegalArgumentException("count must be 1.." + max);
-                        stack = new ItemStack(item, (int) count);
-                    }
-                    p.getInventory().setItem(slot, stack);
+                    p.getInventory().setItem(slot, a.get(2) == null ? ItemStack.EMPTY : stack(a.get(2), a.get(3), false));
                     return null;
                 })
                 .function("count", a -> {
@@ -337,12 +577,13 @@ final class GameApi {
     }
 
     /** {id, count, name} or null for an empty slot. */
-    private static Map<String, Object> item(ItemStack s) {
+    static Map<String, Object> item(ItemStack s) {
         if (s.isEmpty()) return null;
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", BuiltInRegistries.ITEM.getKey(s.getItem()).toString());
         m.put("count", s.getCount());
         m.put("name", s.getHoverName().getString());
+        ItemCompat.describe(s, m);
         return m;
     }
 
@@ -372,16 +613,13 @@ final class GameApi {
         return e;
     }
 
-    private static String typeId(Entity e) {
+    static String typeId(Entity e) {
         return BuiltInRegistries.ENTITY_TYPE.getKey(e.getType()).toString();
     }
 
-    /** What scripts hold: {@code {id, type}}; the prelude gives it the entity methods. */
-    private static Map<String, Object> handle(Entity e) {
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", e.getUUID().toString());
-        m.put("type", typeId(e));
-        return m;
+    /** What scripts hold: {@code {id, type}} with the entity methods. */
+    static EntityRef handle(Entity e) {
+        return new EntityRef(e.getUUID().toString(), typeId(e));
     }
 
     /** Any sound id, also ones only a resource's assets define (the client resolves it). */

@@ -28,7 +28,9 @@ import java.util.concurrent.CompletableFuture;
  * asks once per connection (and the answer counts for the server's own packs too, as vanilla's prompt does).
  * Render thread only.
  */
-final class ClientAssets {
+public final class ClientAssets {
+    /** Every pack id Troupe pushed (DownloadedPackSourceMixin keeps the client from answering the server for them). */
+    private static final java.util.Set<UUID> OURS = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final Path cache;
     private final Map<String, Path> pushed = new HashMap<>();
     private boolean asked;
@@ -101,7 +103,13 @@ final class ClientAssets {
     }
 
     private static UUID id(String resource) {
-        return UUID.nameUUIDFromBytes(("troupe:" + resource).getBytes(StandardCharsets.UTF_8));
+        UUID id = UUID.nameUUIDFromBytes(("troupe:" + resource).getBytes(StandardCharsets.UTF_8));
+        OURS.add(id);
+        return id;
+    }
+
+    public static boolean ours(UUID id) {
+        return OURS.contains(id);
     }
 }
 //?} else {

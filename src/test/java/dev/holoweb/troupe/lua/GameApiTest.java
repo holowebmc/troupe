@@ -43,12 +43,29 @@ class GameApiTest {
     }
 
     @Test
+    void cancellableEvents() throws Exception {
+        ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
+        Module players = host.modules().global("players").event("break").event("place");
+        assertFalse(host.modules().listens(players, "break"));
+        start(host, "server", """
+                players.on_break(function(p, block) return block.id ~= 'minecraft:bedrock' end)
+                players.on_break(function(p, block) if block.id == 'minecraft:stone' then error('oops') end end)
+                players.on_place(function(p, block) timer.wait(10) return false end)""");
+        assertTrue(host.modules().listens(players, "break"));
+        Peer ana = new Peer("p1", "Ana");
+        assertFalse(host.modules().emitCancellable(players, "break", ana, Map.of("id", "minecraft:bedrock")), "false cancels");
+        assertTrue(host.modules().emitCancellable(players, "break", ana, Map.of("id", "minecraft:dirt")), "nil/true lets it happen");
+        assertTrue(host.modules().emitCancellable(players, "break", ana, Map.of("id", "minecraft:stone")), "an error doesn't cancel");
+        assertTrue(host.modules().emitCancellable(players, "place", ana, Map.of("id", "minecraft:dirt")), "a handler that waits can't cancel");
+    }
+
+    @Test
     void entityHandlesGetMethods() throws Exception {
         ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
         host.modules().global("entities")
-                .function("spawn", a -> Map.of("id", "e1", "type", a.string(0)))
-                .function("near", a -> List.of(Map.of("id", "e2", "type", "minecraft:cow")))
-                .function("get", a -> a.string(0).equals("e9") ? null : Map.of("id", a.string(0), "type", "minecraft:pig"))
+                .function("spawn", a -> new EntityRef("e1", a.string(0)))
+                .function("near", a -> List.of(new EntityRef("e2", "minecraft:cow")))
+                .function("get", a -> a.string(0).equals("e9") ? null : new EntityRef(a.string(0), "minecraft:pig"))
                 .function("set_name", a -> log.add(a.string(0) + " named " + a.string(1)))
                 .function("remove", a -> {
                     throw new IllegalArgumentException("entity isn't loaded");

@@ -67,6 +67,9 @@ local function relay(ok, ...)
   error(msg, 3)
 end
 
+-- Players and entities can be passed as handles or ids.
+local function pid(p) if type(p) == "table" then return p.id end return p end
+
 -- Server: methods of player handles (players.*, net handlers, events). Players are passed around as their id.
 local P = host.player_methods
 if players then
@@ -74,34 +77,49 @@ if players then
   for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods",
                         "health", "max_health", "set_health", "food", "set_food", "gamemode", "set_gamemode",
                         "xp", "give_xp", "set_level", "effect", "effects", "clear_effects",
-                        "title", "actionbar", "sound", "kick",
-                        "items", "item", "set_item", "count", "take", "held" }) do
+                        "title", "actionbar", "sound", "kick", "tab", "looking_at",
+                        "items", "item", "set_item", "count", "take", "held",
+                        "attribute", "set_attribute", "set_velocity", "glow", "dismount", "vehicle", "passengers" }) do
     local f = players[fn]
     P[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end
+  local mount = players.mount
+  function P:mount(vehicle) return relay(pcall(mount, self.id, pid(vehicle))) end
   function P:has_mod(name)
     for _, m in ipairs(self:mods()) do if m == name then return true end end
     return false
   end
 end
 
--- Server: entity handles ({ id, type }) get entity:fn(...) = entities.fn(entity.id, ...).
+-- Server: entity handles ({ id, type }, wherever they come from) get entity:fn(...) = entities.fn(entity.id, ...).
+local E = host.entity_methods
 if entities then
-  local E = {}
-  E.__index = E
-  for _, fn in ipairs({ "pos", "teleport", "remove", "alive", "name", "set_name", "health" }) do
+  for _, fn in ipairs({ "pos", "teleport", "remove", "alive", "name", "set_name", "health", "set_health",
+                        "equip", "equipment", "attribute", "set_attribute", "effect", "clear_effects",
+                        "set_velocity", "glow", "dismount", "vehicle", "passengers", "move_to", "set_ai" }) do
     local f = entities[fn]
     E[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end
-  local function wrap(e) if e then return setmetatable(e, E) end return nil end
-  local spawn, near, get = entities.spawn, entities.near, entities.get
-  function entities.spawn(...) return wrap(relay(pcall(spawn, ...))) end
-  function entities.get(...) return wrap(relay(pcall(get, ...))) end
-  function entities.near(...)
-    local list = relay(pcall(near, ...))
-    for _, e in ipairs(list) do wrap(e) end
-    return list
-  end
+  local mount = entities.mount
+  function E:mount(vehicle) return relay(pcall(mount, self.id, pid(vehicle))) end
+end
+
+-- Server: bossbar.create(...) returns an object: bar:set{...}, bar:show(p), bar:hide(p), bar:remove().
+if bossbar then
+  local B = {}
+  B.__index = B
+  local create, set, show, hide, remove = bossbar.create, bossbar.set, bossbar.show, bossbar.hide, bossbar.remove
+  function B:set(opts) return relay(pcall(set, self.id, opts)) end
+  function B:show(p) return relay(pcall(show, self.id, pid(p))) end
+  function B:hide(p) return relay(pcall(hide, self.id, pid(p))) end
+  function B:remove() return relay(pcall(remove, self.id)) end
+  function bossbar.create(...) return setmetatable({ id = relay(pcall(create, ...)) }, B) end
+end
+
+if teams then
+  local add, rm = teams.add, teams.remove
+  function teams.add(name, p) return relay(pcall(add, name, pid(p))) end
+  function teams.remove(p) return relay(pcall(rm, pid(p))) end
 end
 
 -- Client: keys.bind('b', fn) runs fn when b is pressed with no screen open.
