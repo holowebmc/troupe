@@ -70,15 +70,37 @@ end
 -- Server: methods of player handles (players.*, net handlers, events). Players are passed around as their id.
 local P = host.player_methods
 if players then
-  function P:message(text) return relay(pcall(players.message, self.id, text)) end
-  function P:pos() return relay(pcall(players.pos, self.id)) end
-  function P:teleport(x, y, z, dim) return relay(pcall(players.teleport, self.id, x, y, z, dim)) end
-  function P:give(item, count) return relay(pcall(players.give, self.id, item, count)) end
-  function P:online() return relay(pcall(players.online, self.id)) end
-  function P:mods() return relay(pcall(players.mods, self.id)) end
+  -- player:fn(...) is players.fn(player.id, ...)
+  for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods",
+                        "health", "max_health", "set_health", "food", "set_food", "gamemode", "set_gamemode",
+                        "xp", "give_xp", "set_level", "effect", "effects", "clear_effects",
+                        "title", "actionbar", "sound", "kick",
+                        "items", "item", "set_item", "count", "take", "held" }) do
+    local f = players[fn]
+    P[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
+  end
   function P:has_mod(name)
     for _, m in ipairs(self:mods()) do if m == name then return true end end
     return false
+  end
+end
+
+-- Server: entity handles ({ id, type }) get entity:fn(...) = entities.fn(entity.id, ...).
+if entities then
+  local E = {}
+  E.__index = E
+  for _, fn in ipairs({ "pos", "teleport", "remove", "alive", "name", "set_name", "health" }) do
+    local f = entities[fn]
+    E[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
+  end
+  local function wrap(e) if e then return setmetatable(e, E) end return nil end
+  local spawn, near, get = entities.spawn, entities.near, entities.get
+  function entities.spawn(...) return wrap(relay(pcall(spawn, ...))) end
+  function entities.get(...) return wrap(relay(pcall(get, ...))) end
+  function entities.near(...)
+    local list = relay(pcall(near, ...))
+    for _, e in ipairs(list) do wrap(e) end
+    return list
   end
 end
 

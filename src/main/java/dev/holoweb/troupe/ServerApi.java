@@ -147,6 +147,8 @@ final class ServerApi {
                     return null;
                 })
                 .function("keys", a -> store().keys(a.resource()));
+
+        new GameApi(modules, this);
     }
 
     private final List<ServerPlayer> joining = new java.util.ArrayList<>();
@@ -174,7 +176,7 @@ final class ServerApi {
         return new Peer(p.getUUID().toString(), Compat.name(p.getGameProfile()));
     }
 
-    private MinecraftServer server() {
+    MinecraftServer server() {
         MinecraftServer s = server.get();
         if (s == null) throw new IllegalStateException("the server isn't running");
         return s;
@@ -185,7 +187,7 @@ final class ServerApi {
         return store;
     }
 
-    private ServerPlayer find(String idOrName) {
+    ServerPlayer find(String idOrName) {
         try {
             return server().getPlayerList().getPlayer(UUID.fromString(idOrName));
         } catch (IllegalArgumentException notAnId) {
@@ -193,25 +195,25 @@ final class ServerApi {
         }
     }
 
-    private ServerPlayer player(Args a) {
+    ServerPlayer player(Args a) {
         ServerPlayer p = find(a.string(0));
         if (p == null) throw new IllegalArgumentException("player isn't online");
         return p;
     }
 
-    private static Identifier id(String id) {
+    static Identifier id(String id) {
         Identifier parsed = Identifier.tryParse(id);
         if (parsed == null) throw new IllegalArgumentException("bad id '" + id + "'");
         return parsed;
     }
 
-    private ServerLevel level(String dim) {
+    ServerLevel level(String dim) {
         ServerLevel level = server().getLevel(ResourceKey.create(Registries.DIMENSION, id(dim)));
         if (level == null) throw new IllegalArgumentException("no dimension '" + dim + "'");
         return level;
     }
 
-    private ServerLevel level(Args a, int i) {
+    ServerLevel level(Args a, int i) {
         return a.get(i) == null ? server().overworld() : level(a.string(i));
     }
 

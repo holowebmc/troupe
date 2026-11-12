@@ -43,6 +43,29 @@ class GameApiTest {
     }
 
     @Test
+    void entityHandlesGetMethods() throws Exception {
+        ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
+        host.modules().global("entities")
+                .function("spawn", a -> Map.of("id", "e1", "type", a.string(0)))
+                .function("near", a -> List.of(Map.of("id", "e2", "type", "minecraft:cow")))
+                .function("get", a -> a.string(0).equals("e9") ? null : Map.of("id", a.string(0), "type", "minecraft:pig"))
+                .function("set_name", a -> log.add(a.string(0) + " named " + a.string(1)))
+                .function("remove", a -> {
+                    throw new IllegalArgumentException("entity isn't loaded");
+                });
+        start(host, "server", """
+                local z = entities.spawn('minecraft:zombie', 0, 64, 0)
+                z:set_name('Zé')
+                for _, e in ipairs(entities.near(0, 64, 0, 10)) do e:set_name(e.type) end
+                entities.get('e3'):set_name('porco')
+                mods.call('entities', 'set_name', tostring(entities.get('e9')), 'nada')
+                local ok, err = pcall(function() z:remove() end)
+                mods.call('entities', 'set_name', 'err', err)""");
+        assertEquals(List.of("e1 named Zé", "e2 named minecraft:cow", "e3 named porco", "nil named nada",
+                "err named entities.remove: entity isn't loaded"), log);
+    }
+
+    @Test
     void startingResourceCanBeToldWhoIsOnline() throws Exception {
         ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
         Module players = host.modules().global("players").function("message", a -> log.add(a.string(1))).event("join");
