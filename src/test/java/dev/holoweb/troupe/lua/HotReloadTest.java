@@ -2,6 +2,7 @@ package dev.holoweb.troupe.lua;
 
 import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.net.Protocol.Manifest;
+import dev.holoweb.troupe.net.BlobCache;
 import dev.holoweb.troupe.net.ServerResources;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * running ones, push) with real files, and the client downloading and restarting its side.
  */
 class HotReloadTest {
+    private static final String KEY = BlobCache.newKey();
     @TempDir
     Path tmp;
 
@@ -48,10 +50,10 @@ class HotReloadTest {
         Link[] toClient = new Link[1];
         Manifest[] clientManifest = {Manifest.EMPTY};
         Link toServer = new Link(clientHost, NetTest.out(m -> wire.add(() -> NetTest.deliver(toClient[0], m))),
-                () -> clientHost.apply(ResourceHost.entries(clientManifest[0], cache), clientManifest[0].generations()),
+                () -> clientHost.apply(ResourceHost.entries(clientManifest[0], new BlobCache(cache, clientManifest[0].key())), clientManifest[0].generations()),
                 cache, (m, ready) -> {
                     clientManifest[0] = m;
-                    clientHost.apply(ResourceHost.entries(m, cache), m.generations());
+                    clientHost.apply(ResourceHost.entries(m, new BlobCache(cache, m.key())), m.generations());
                     ready.run();
                 });
         toClient[0] = new Link(server, new Peer("p1", "Ana"), NetTest.out(m -> wire.add(() -> NetTest.deliver(toServer, m))));
@@ -63,7 +65,7 @@ class HotReloadTest {
         write("hud/server/main.lua", "");
         Runnable rescan = () -> {
             try {
-                resources = ServerResources.scan(tmp.resolve("resources"), w -> {});
+                resources = ServerResources.scan(tmp.resolve("resources"), w -> {}).withKey(KEY);
             } catch (Exception e) {
                 throw new AssertionError(e);
             }

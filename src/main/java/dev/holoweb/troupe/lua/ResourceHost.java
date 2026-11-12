@@ -257,12 +257,12 @@ public final class ResourceHost {
     }
 
     /** Client: the server's resources, read from the cache; only paths in the manifest exist. */
-    public static Map<String, Entry> entries(dev.holoweb.troupe.net.Protocol.Manifest m, java.nio.file.Path cache) {
+    public static Map<String, Entry> entries(dev.holoweb.troupe.net.Protocol.Manifest m, dev.holoweb.troupe.net.BlobCache cache) {
         Map<String, Entry> entries = new TreeMap<>();
         m.resources().forEach((name, files) -> {
             LuaRuntime.Files read = path -> {
                 Integer blob = files.get(path);
-                return blob == null ? null : java.nio.file.Files.readAllBytes(cache.resolve(m.blobs().get(blob).sha256()));
+                return blob == null ? null : cache.read(m.blobs().get(blob));
             };
             try {
                 byte[] json = read.read(dev.holoweb.troupe.net.Protocol.RESOURCE_JSON);

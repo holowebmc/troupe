@@ -16,22 +16,24 @@ import java.util.function.Consumer;
 import java.util.stream.IntStream;
 
 /**
- * Client side of one download. The cache is content-addressed ({@code cache/<sha256>}), shared by every server:
+ * Client side of one download into the server's {@link BlobCache} (encrypted, named by a keyed hash of the content):
  * file names never come from the server, so its paths can't reach the disk.
  */
 public final class ClientSync {
-    private final Path cache;
+    private final Path dir;
     private final Consumer<byte[]> out;
+    private BlobCache cache;
     private Manifest manifest;
     private int[] wanted;
     private int next;
     private long received;   // bytes of the blob being written
     private OutputStream part;
+    private Blob partBlob;
     private MessageDigest digest;
     private long downloadedBytes;
 
-    public ClientSync(Path cache, Consumer<byte[]> out) {
-        this.cache = cache;
+    public ClientSync(Path dir, Consumer<byte[]> out) {
+        this.dir = dir;
         this.out = out;
     }
 
@@ -43,12 +45,11 @@ public final class ClientSync {
             case Protocol.MANIFEST -> {
                 if (manifest != null) throw new ProtocolException("MANIFEST sent twice");
                 manifest = Protocol.decodeManifest(in);
-                Files.createDirectories(cache);
-                for (Blob b : manifest.blobs()) {
-                    Path p = cache.resolve(b.sha256());
-                    if (b.size() == 0 && !Files.exists(p)) Files.createFile(p); // nothing to download
-                }
-                wanted = IntStream.range(0, manifest.blobs().size()).filter(i -> !cached(manifest.blobs().get(i))).toArray();
+                cache = new BlobCache(dir, manifest.key());
+                for (Blob b : manifest.blobs())
+                    if (b.size() == 0 && !cache.has(b)) cache.write(b, new byte[0]); // nothing to download
+                // ponytail: trusts size alone for cached blobs (no decrypt on every join); BlobCache.read checks content.
+                wanted = IntStream.range(0, manifest.blobs().size()).filter(i -> !cache.has(manifest.blobs().get(i))).toArray();
                 byte[] bitmap = new byte[(manifest.blobs().size() + 7) / 8];
                 for (int i : wanted) bitmap[i >> 3] |= (byte) (1 << (i & 7));
                 out.accept(new Protocol.Out(Protocol.WANT).varint(Protocol.VERSION).bytes(bitmap).toByteArray());
@@ -62,8 +63,9 @@ public final class ClientSync {
                 byte[] data = in.rest();
                 if (received + data.length > b.size()) throw new ProtocolException("blob " + blob + " longer than announced");
                 if (part == null) {
-                    digest = sha256();
-                    part = new DigestOutputStream(Files.newOutputStream(partFile(b)), digest);
+                    digest = BlobCache.sha256();
+                    part = new DigestOutputStream(cache.start(b), digest);
+                    partBlob = b;
                 }
                 part.write(data);
                 received += data.length;
@@ -71,11 +73,12 @@ public final class ClientSync {
                 if (received == b.size()) {
                     part.close();
                     part = null;
+                    partBlob = null;
                     if (!HexFormat.of().formatHex(digest.digest()).equals(b.sha256())) {
-                        Files.deleteIfExists(partFile(b));
+                        cache.discard(b);
                         throw new ProtocolException("blob " + blob + " does not match its SHA-256");
                     }
-                    Files.move(partFile(b), cache.resolve(b.sha256()), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    cache.commit(b);
                     received = 0;
                     next++;
                     return finishIfDone();
@@ -114,8 +117,9 @@ public final class ClientSync {
         out.accept(new Protocol.Out(Protocol.READY).toByteArray());
     }
 
-    public Path file(Blob b) {
-        return cache.resolve(b.sha256());
+    /** Where this server's files are (null until MANIFEST). */
+    public BlobCache cache() {
+        return cache;
     }
 
     /** Drops a half-written blob, e.g. when the connection dies mid-download. */
@@ -123,34 +127,14 @@ public final class ClientSync {
         if (part == null) return;
         try {
             part.close();
-            Files.deleteIfExists(partFile(manifest.blobs().get(wanted[next])));
         } catch (IOException ignored) {
         }
+        cache.discard(partBlob);
         part = null;
+        partBlob = null;
     }
 
     private Manifest finishIfDone() {
         return next < wanted.length ? null : manifest;
-    }
-
-    // ponytail: trusts size alone for cached blobs (no rehash on every join); verify on load if tampering matters.
-    private boolean cached(Blob b) {
-        try {
-            return Files.size(cache.resolve(b.sha256())) == b.size();
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private Path partFile(Blob b) {
-        return cache.resolve(b.sha256() + ".part");
-    }
-
-    private static MessageDigest sha256() {
-        try {
-            return MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException e) {
-            throw new AssertionError(e);
-        }
     }
 }

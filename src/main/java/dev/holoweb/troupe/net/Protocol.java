@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
  *
  * <pre>
  * server → client
- *   MANIFEST  varint version, varint blobs, blobs × (32 bytes sha256, varlong size),
+ *   MANIFEST  varint version, 32 bytes cache key (see {@link BlobCache}), varint blobs, blobs × (32 bytes sha256, varlong size),
  *             varint resources, resources × (string name, varint generation, varint files, files × (string path, varint blob))
  *   CHUNK     varint blob, data up to the end of the message (blobs go in WANT order, each from offset 0)
  *   (the same four messages are reused in the play phase when the server's running resources change)
@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
  */
 public final class Protocol {
     public static final String CHANNEL = "troupe:v1";
-    public static final int VERSION = 2;
+    public static final int VERSION = 3;
 
     public static final int MANIFEST = 0, CHUNK = 1; // server → client
     public static final int WANT = 0, READY = 1;     // client → server
@@ -70,9 +70,18 @@ public final class Protocol {
     /**
      * {@code resources}: resource name → (path inside the resource → index in {@code blobs}).
      * {@code generations}: bumps every time the resource starts on the server; a client restarts its side when it changes.
+     * {@code key}: the server's cache key (64 hex chars), "" until the server sets it.
      */
-    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations) {
+    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations, String key) {
         public static final Manifest EMPTY = new Manifest(List.of(), Map.of(), Map.of());
+
+        public Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations) {
+            this(blobs, resources, generations, "");
+        }
+
+        public Manifest withKey(String key) {
+            return new Manifest(blobs, resources, generations, key);
+        }
 
         public int generation(String resource) {
             return generations.getOrDefault(resource, 0);
@@ -98,7 +107,8 @@ public final class Protocol {
     }
 
     public static byte[] encodeManifest(Manifest m) {
-        Out out = new Out(MANIFEST).varint(VERSION).varint(m.blobs().size());
+        if (m.key().length() != 64) throw new IllegalStateException("the manifest has no cache key");
+        Out out = new Out(MANIFEST).varint(VERSION).bytes(HEX.parseHex(m.key())).varint(m.blobs().size());
         for (Blob b : m.blobs()) out.bytes(HEX.parseHex(b.sha256())).varlong(b.size());
         out.varint(m.resources().size());
         m.resources().forEach((name, files) -> {
@@ -112,6 +122,7 @@ public final class Protocol {
     public static Manifest decodeManifest(In in) throws ProtocolException {
         int version = in.varint();
         if (version != VERSION) throw new ProtocolException("server speaks protocol " + version + ", this client " + VERSION);
+        String key = HEX.formatHex(in.bytes(32));
         int blobCount = in.count(MAX_BLOBS);
         List<Blob> blobs = new ArrayList<>(blobCount);
         long total = 0;
@@ -140,7 +151,7 @@ public final class Protocol {
             resources.put(name, files);
         }
         in.end();
-        return new Manifest(blobs, resources, generations);
+        return new Manifest(blobs, resources, generations, key);
     }
 
     /** Message writer: type byte first, then fields. */

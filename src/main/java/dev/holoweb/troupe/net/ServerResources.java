@@ -118,7 +118,12 @@ public record ServerResources(Manifest manifest, List<Path> files, Map<String, R
             resources.put(name, mapped);
             generations.put(name, running.get(name));
         });
-        return new ServerResources(new Manifest(blobs, resources, generations), files, infos, root);
+        return new ServerResources(new Manifest(blobs, resources, generations, manifest.key()), files, infos, root);
+    }
+
+    /** The server's cache key goes out with the manifest ({@link BlobCache}). */
+    public ServerResources withKey(String key) {
+        return new ServerResources(manifest.withKey(key), files, infos, root);
     }
 
     /**

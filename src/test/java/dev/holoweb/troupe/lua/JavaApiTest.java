@@ -2,6 +2,7 @@ package dev.holoweb.troupe.lua;
 
 import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.net.AssetPacks;
+import dev.holoweb.troupe.net.BlobCache;
 import dev.holoweb.troupe.net.Protocol.Blob;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 import dev.holoweb.troupe.net.ResourceInfo;
@@ -86,10 +87,11 @@ class JavaApiTest {
 
     @Test
     void assetsBecomeAPackZip(@TempDir Path tmp) throws Exception {
-        Path cache = Files.createDirectories(tmp.resolve("cache"));
-        Files.writeString(cache.resolve("aa"), "png bytes");
-        Files.writeString(cache.resolve("bb"), "print(1)");
-        Manifest m = new Manifest(List.of(new Blob("aa", 9), new Blob("bb", 8)),
+        BlobCache cache = new BlobCache(tmp.resolve("cache"), BlobCache.newKey());
+        Blob png = blob("png bytes"), lua = blob("print(1)");
+        cache.write(png, "png bytes".getBytes());
+        cache.write(lua, "print(1)".getBytes());
+        Manifest m = new Manifest(List.of(png, lua),
                 Map.of("hud", Map.of("assets/hud/textures/icon.png", 0, "client/main.lua", 1), "logic", Map.of("client/main.lua", 1)),
                 Map.of());
         Path zip = AssetPacks.build(m, "hud", cache, tmp.resolve("packs"), "{\"pack\":{}}");
@@ -100,5 +102,10 @@ class JavaApiTest {
         }
         assertEquals(zip, AssetPacks.build(m, "hud", cache, tmp.resolve("packs"), "{\"pack\":{}}"), "same assets, same zip");
         assertNull(AssetPacks.build(m, "logic", cache, tmp.resolve("packs"), "{}"), "no assets, no pack");
+    }
+
+    private static Blob blob(String content) throws Exception {
+        byte[] b = content.getBytes();
+        return new Blob(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(b)), b.length);
     }
 }

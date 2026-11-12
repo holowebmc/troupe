@@ -3,6 +3,7 @@ package dev.holoweb.troupe;
 import dev.holoweb.troupe.api.Side;
 import dev.holoweb.troupe.lua.Link;
 import dev.holoweb.troupe.lua.ResourceHost;
+import dev.holoweb.troupe.net.BlobCache;
 import dev.holoweb.troupe.net.ClientSync;
 import dev.holoweb.troupe.net.Protocol;
 import dev.holoweb.troupe.net.Protocol.Manifest;
@@ -31,11 +32,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
- * Client side: downloads the server's resources into the shared cache while the connection is configuring (or, before
- * 1.20.2, when the server pushes them on join), runs them while in the world.
+ * Client side: downloads the server's resources into the (encrypted) cache while the connection is configuring (or,
+ * before 1.20.2, when the server pushes them on join), runs them while in the world.
  */
 public final class TroupeClient implements ClientModInitializer {
-    private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/cache");
+    private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/blobs");
     private static final ResourceHost host = new ResourceHost(Side.CLIENT, task -> Minecraft.getInstance().execute(task));
     private static final ClientApi api = new ClientApi(host.modules());
     private static final ClientAssets assets = new ClientAssets(CACHE);
@@ -58,6 +59,8 @@ public final class TroupeClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         Troupe.registerModules(host.modules());
+        deleteTree(CACHE.resolveSibling("cache")); // the unencrypted cache of Troupe 0.1
+        ClientAssets.deleteBuilt(CACHE);
         if (FabricLoader.getInstance().isModLoaded("vitrine")) host.setUi(VitrineUi.create());
         else Troupe.LOG.info("Vitrine isn't installed: resource pages (ui.*) won't open");
 
@@ -65,6 +68,7 @@ public final class TroupeClient implements ClientModInitializer {
         ClientConfigurationConnectionEvents.INIT.register((handler, client) -> {
             reset();
             manifest = Manifest.EMPTY;
+            ClientAssets.deleteBuilt(CACHE); // the last server's packs were popped when we left it
         });
         ClientConfigurationConnectionEvents.DISCONNECT.register((handler, client) -> {
             reset();
@@ -100,8 +104,10 @@ public final class TroupeClient implements ClientModInitializer {
         // The resources start when the server says START (after it sent the global state).
         ClientPlayConnectionEvents.INIT.register((handler, client) -> client.execute(() -> {
             started = false;
-            //? if <1.20.5
-            /*manifest = Manifest.EMPTY;*/ // no configuration phase: the manifest comes in play
+            //? if <1.20.5 {
+            /*manifest = Manifest.EMPTY; // no configuration phase: the manifest comes in play
+            ClientAssets.deleteBuilt(CACHE);
+            *///?}
             link = new Link(host, new Link.Out() {
                 public void send(byte[] message, Runnable onSent) {
                     ClientPlayNetworking.send(new TroupePayload(message));
@@ -192,7 +198,7 @@ public final class TroupeClient implements ClientModInitializer {
     private static void startResources() {
         started = true;
         Manifest m = manifest;
-        host.apply(ResourceHost.entries(m, CACHE), m.generations());
+        host.apply(ResourceHost.entries(m, new BlobCache(CACHE, m.key())), m.generations());
         assets.apply(m);
     }
 
@@ -207,8 +213,17 @@ public final class TroupeClient implements ClientModInitializer {
             return;
         }
         Troupe.LOG.info("Server resources changed: {}", m.generations());
-        host.apply(ResourceHost.entries(m, CACHE), m.generations());
+        host.apply(ResourceHost.entries(m, new BlobCache(CACHE, m.key())), m.generations());
         whenLoaded(m, ready);
+    }
+
+    static void deleteTree(Path dir) {
+        if (!Files.exists(dir)) return;
+        try (var walk = Files.walk(dir)) {
+            for (Path p : walk.sorted(java.util.Comparator.reverseOrder()).toList()) Files.deleteIfExists(p);
+        } catch (IOException e) {
+            Troupe.LOG.debug("Couldn't delete {}: {}", dir, e.toString());
+        }
     }
 
     private static void reset() {

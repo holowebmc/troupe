@@ -168,14 +168,36 @@ public final class Troupe implements ModInitializer {
     private static void rescan(MinecraftServer s) {
         Path root = Compat.serverDir(s).resolve("resources");
         try {
-            resources = ServerResources.scan(root, w -> LOG.warn("Resource {}", w));
+            resources = ServerResources.scan(root, w -> LOG.warn("Resource {}", w)).withKey(cacheKey(s));
         } catch (IOException e) {
             LOG.error("Could not read the resources folder", e);
-            resources = ServerResources.EMPTY;
+            resources = ServerResources.EMPTY.withKey(cacheKey(s));
         }
         Map<String, ResourceHost.Entry> entries = ResourceHost.entries(resources);
         host.setAvailable(entries);
         LOG.info("{} resources, {} with client files: {}", entries.size(), resources.manifest().resources().size(), entries.keySet());
+    }
+
+    /**
+     * The key clients encrypt this server's files with ({@code troupe/cache.key}, made once). Keeping it means
+     * returning players reuse their cache; deleting it makes everyone download again.
+     */
+    private static String cacheKey(MinecraftServer s) {
+        Path file = Compat.serverDir(s).resolve("troupe/cache.key");
+        try {
+            if (Files.isRegularFile(file)) {
+                String key = Files.readString(file).trim();
+                if (key.matches("[0-9a-f]{64}")) return key;
+                LOG.warn("{} isn't a key; making a new one", file);
+            }
+            String key = dev.holoweb.troupe.net.BlobCache.newKey();
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, key);
+            return key;
+        } catch (IOException e) {
+            LOG.error("Couldn't keep the cache key in {}: clients download everything on each restart", file, e);
+            return dev.holoweb.troupe.net.BlobCache.newKey();
+        }
     }
 
     /**

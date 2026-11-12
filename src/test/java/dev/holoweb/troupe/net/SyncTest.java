@@ -42,7 +42,7 @@ class SyncTest {
         write(root.resolve("sem-manifest/client/main.lua"), "x");
 
         List<String> warnings = new ArrayList<>();
-        ServerResources resources = ServerResources.scan(root, warnings::add);
+        ServerResources resources = ServerResources.scan(root, warnings::add).withKey(BlobCache.newKey());
         assertEquals(List.of("banco", "hud"), List.copyOf(resources.manifest().resources().keySet()));
         assertEquals(2, warnings.size(), warnings.toString());
         // main.lua shared by both, config, app.js, empty.css, and the two resource.json
@@ -53,13 +53,47 @@ class SyncTest {
         Result first = sync(resources, cache, UnaryOperator.identity());
         Manifest m = first.manifest;
         assertEquals(List.of("client/main.lua", "resource.json", "shared/config.lua", "ui/app.js", "ui/empty.css"), List.copyOf(m.resources().get("banco").keySet()));
-        assertArrayEquals(big, Files.readAllBytes(cache.resolve(m.blobs().get(m.resources().get("banco").get("ui/app.js")).sha256())));
+        Protocol.Blob app = m.blobs().get(m.resources().get("banco").get("ui/app.js"));
+        assertArrayEquals(big, first.client.cache().read(app));
+        // at rest: names say nothing about the content, and the bytes aren't the file
+        try (var files = Files.list(cache)) {
+            for (Path f : files.toList()) {
+                assertTrue(m.blobs().stream().noneMatch(b -> f.getFileName().toString().contains(b.sha256())), f.toString());
+                byte[] stored = Files.readAllBytes(f);
+                assertFalse(new String(stored, java.nio.charset.StandardCharsets.ISO_8859_1).contains("print('oi')"), f.toString());
+            }
+        }
         assertEquals(m.resources().get("banco").get("client/main.lua"), m.resources().get("hud").get("client/main.lua"));
         assertEquals(5, first.client.downloadedFiles()); // empty.css is created, not downloaded
 
         Result second = sync(resources, cache, UnaryOperator.identity());
         assertEquals(m, second.manifest);
         assertEquals(0, second.client.downloadedFiles());
+
+        // another key (another server, or a new key): nothing readable, everything downloads again
+        Result other = sync(resources.withKey(BlobCache.newKey()), cache, UnaryOperator.identity());
+        assertEquals(5, other.client.downloadedFiles());
+        assertThrows(IOException.class, () -> new BlobCache(cache, BlobCache.newKey()).read(app));
+    }
+
+    @Test
+    void tamperedCacheFilesDontLoad() throws IOException {
+        Path root = tmp.resolve("resources");
+        write(root.resolve("a/resource.json"), "{}");
+        write(root.resolve("a/client/main.lua"), "print(1)");
+        ServerResources resources = ServerResources.scan(root, w -> {}).withKey(BlobCache.newKey());
+        Path cache = tmp.resolve("cache");
+        Result r = sync(resources, cache, UnaryOperator.identity());
+        Protocol.Blob main = r.manifest.blobs().get(r.manifest.resources().get("a").get("client/main.lua"));
+        assertEquals("print(1)", new String(r.client.cache().read(main)));
+        try (var files = Files.list(cache)) {
+            for (Path f : files.toList()) {
+                byte[] b = Files.readAllBytes(f);
+                b[b.length - 1] ^= 1;
+                Files.write(f, b);
+            }
+        }
+        assertThrows(IOException.class, () -> r.client.cache().read(main));
     }
 
     @Test
@@ -67,7 +101,7 @@ class SyncTest {
         Path root = tmp.resolve("resources");
         write(root.resolve("a/resource.json"), "{}");
         write(root.resolve("a/client/main.lua"), "print(1)");
-        ServerResources resources = ServerResources.scan(root, w -> {});
+        ServerResources resources = ServerResources.scan(root, w -> {}).withKey(BlobCache.newKey());
         UnaryOperator<byte[]> flipLastByte = msg -> {
             if (msg[0] != Protocol.CHUNK) return msg;
             byte[] copy = Arrays.copyOf(msg, msg.length);

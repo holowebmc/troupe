@@ -2,6 +2,7 @@ package dev.holoweb.troupe;
 
 //? if >=1.20.3 {
 import dev.holoweb.troupe.net.AssetPacks;
+import dev.holoweb.troupe.net.BlobCache;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConfirmScreen;
@@ -48,7 +49,7 @@ final class ClientAssets {
             if (!m.resources().containsKey(name)) pop(name);
         for (String name : m.resources().keySet()) {
             try {
-                Path zip = AssetPacks.build(m, name, cache, cache.resolveSibling("packs"), mcmeta);
+                Path zip = AssetPacks.build(m, name, new BlobCache(cache, m.key()), cache.resolveSibling("packs"), mcmeta);
                 if (zip == null) pop(name);
                 else if (!zip.equals(pushed.get(name))) {
                     mc.getDownloadedPackSource().pushLocalPack(id(name), zip);
@@ -67,6 +68,11 @@ final class ClientAssets {
     void clear() {
         for (String name : List.copyOf(pushed.keySet())) pop(name);
         asked = false;
+    }
+
+    /** The built packs are the only decrypted copy on disk: gone at launch and before each server (best effort). */
+    static void deleteBuilt(Path cache) {
+        TroupeClient.deleteTree(cache.resolveSibling("packs"));
     }
 
     /** Pushed packs wait in the pack manager until server packs are allowed: ask if the player wants to be asked. */
@@ -100,6 +106,7 @@ final class ClientAssets {
 }
 //?} else {
 /*import dev.holoweb.troupe.net.AssetPacks;
+import dev.holoweb.troupe.net.BlobCache;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.ConfirmScreen;
@@ -141,7 +148,7 @@ final class ClientAssets {
     CompletableFuture<Void> apply(Manifest m) {
         Path zip;
         try {
-            zip = AssetPacks.build(m, List.copyOf(m.resources().keySet()), cache, cache.resolveSibling("packs"), ClientCompat.packMcmeta());
+            zip = AssetPacks.build(m, List.copyOf(m.resources().keySet()), new BlobCache(cache, m.key()), cache.resolveSibling("packs"), ClientCompat.packMcmeta());
         } catch (IOException e) {
             Troupe.LOG.error("Couldn't build the resource assets", e);
             return CompletableFuture.completedFuture(null);
@@ -182,6 +189,11 @@ final class ClientAssets {
     void clear() {
         pack = null;
         allowed = null;
+    }
+
+    /^* The built pack is the only decrypted copy on disk: gone at launch and before each server (best effort). *^/
+    static void deleteBuilt(Path cache) {
+        TroupeClient.deleteTree(cache.resolveSibling("packs"));
     }
 
     private CompletableFuture<Void> load() {
