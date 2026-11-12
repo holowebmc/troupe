@@ -334,6 +334,7 @@ public final class LuaRuntime {
 
     /** Wakes sleepers that are due. Called every game tick. */
     void tick(long now) {
+        if (ui != null) ui.tick();
         Sleep s;
         while ((s = sleeping.peek()) != null && now - s.due() >= 0) {
             sleeping.poll();
@@ -422,7 +423,7 @@ public final class LuaRuntime {
     /** Events can fire every frame: the same error is logged at most once every 5 s. */
     private final Map<String, Long> recentErrors = new HashMap<>();
 
-    private void logThrottled(String message) {
+    void logThrottled(String message) {
         long now = System.nanoTime();
         Long last = recentErrors.get(message);
         if (last != null && now - last < 5_000_000_000L) return;
