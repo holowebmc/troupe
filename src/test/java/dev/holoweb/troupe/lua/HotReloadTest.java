@@ -49,9 +49,10 @@ class HotReloadTest {
         Manifest[] clientManifest = {Manifest.EMPTY};
         Link toServer = new Link(clientHost, NetTest.out(m -> wire.add(() -> NetTest.deliver(toClient[0], m))),
                 () -> clientHost.apply(ResourceHost.entries(clientManifest[0], cache), clientManifest[0].generations()),
-                cache, m -> {
+                cache, (m, ready) -> {
                     clientManifest[0] = m;
                     clientHost.apply(ResourceHost.entries(m, cache), m.generations());
+                    ready.run();
                 });
         toClient[0] = new Link(server, new Peer("p1", "Ana"), NetTest.out(m -> wire.add(() -> NetTest.deliver(toServer, m))));
         Links links = new Links(server);

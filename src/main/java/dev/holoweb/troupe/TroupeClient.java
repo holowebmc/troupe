@@ -26,6 +26,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /**
  * Client side: downloads the server's resources into the shared cache while the connection is configuring (or, before
@@ -45,6 +48,8 @@ public final class TroupeClient implements ClientModInitializer {
     private static Link link;
     /** The server said START on this connection (render thread). */
     private static boolean started;
+    /** Files are in, assets are loading: what the loading screen says. */
+    private static volatile boolean loadingAssets;
 
     public static Manifest manifest() {
         return manifest;
@@ -61,17 +66,27 @@ public final class TroupeClient implements ClientModInitializer {
             reset();
             manifest = Manifest.EMPTY;
         });
-        ClientConfigurationConnectionEvents.DISCONNECT.register((handler, client) -> reset());
+        ClientConfigurationConnectionEvents.DISCONNECT.register((handler, client) -> {
+            reset();
+            client.execute(assets::clear);
+        });
 
+        // The player stays in configuration until READY: files in the cache and assets loaded.
         ClientConfigurationNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            if (sync == null) sync = new ClientSync(CACHE, m -> ctx.responseSender().sendPacket(new TroupePayload(m)));
+            if (sync == null) {
+                sync = new ClientSync(CACHE, m -> ctx.responseSender().sendPacket(new TroupePayload(m)));
+                Minecraft.getInstance().execute(() -> showLoading(() -> sync, () -> ctx.responseSender().disconnect(CANCELLED)));
+            }
+            ClientSync s = sync;
             try {
-                Manifest done = sync.receive(payload.data());
+                Manifest done = s.receive(payload.data());
                 if (done != null) {
                     Troupe.LOG.info("{} resources ready ({} files downloaded, {} KiB): {}", done.resources().size(),
-                            sync.downloadedFiles(), sync.downloadedBytes() >> 10, done.resources().keySet());
+                            s.downloadedFiles(), s.downloadedBytes() >> 10, done.resources().keySet());
                     manifest = done;
+                    loadingAssets = true;
                     sync = null;
+                    Minecraft.getInstance().execute(() -> finishLoading(done, s::ready));
                 }
             } catch (IOException e) {
                 Troupe.LOG.warn("Resource download failed", e);
@@ -97,6 +112,7 @@ public final class TroupeClient implements ClientModInitializer {
                     handler.getConnection().disconnect(Component.literal(reason));
                 }
             }, TroupeClient::startResources, CACHE, TroupeClient::applyManifest);
+            loadingAssets = false;
             host.setNetwork(link);
         }));
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
@@ -121,10 +137,55 @@ public final class TroupeClient implements ClientModInitializer {
         if (link == null) return;
         try {
             link.receive(payload.data());
+            // Before 1.20.2 the first download happens here, in the world: hold the player on the loading screen.
+            if (!started && link.download() != null && !(ClientCompat.screen() instanceof LoadingScreen)) {
+                Link l = link;
+                showLoading(l::download, () -> player.connection.getConnection().disconnect(CANCELLED));
+            }
         } catch (IOException e) {
             Troupe.LOG.warn("Troupe protocol error from the server: {}", e.getMessage());
             player.connection.getConnection().disconnect(Component.literal("Troupe: " + e.getMessage()));
         }
+    }
+
+    private static final Component CANCELLED = Component.translatableWithFallback("troupe.loading.cancelled", "Cancelled");
+
+    private static void showLoading(Supplier<ClientSync> download, Runnable cancel) {
+        if (ClientCompat.screen() instanceof LoadingScreen) return;
+        ClientCompat.setScreen(new LoadingScreen(ClientCompat.screen(), () -> status(download.get()), () -> {
+            ClientSync s = download.get();
+            return loadingAssets || s == null || s.wantedBytes() == 0 ? -1 : (double) s.downloadedBytes() / s.wantedBytes();
+        }, cancel));
+    }
+
+    private static Component status(ClientSync s) {
+        if (loadingAssets) return Component.translatableWithFallback("troupe.loading.assets", "Loading textures and sounds");
+        if (s == null || s.wantedFiles() == 0) return Component.translatableWithFallback("troupe.loading.checking", "Checking files");
+        return Component.translatableWithFallback("troupe.loading.download", "Downloading %s of %s files (%s / %s)",
+                s.downloadedFiles(), s.wantedFiles(), size(s.downloadedBytes()), size(s.wantedBytes()));
+    }
+
+    private static String size(long bytes) {
+        return bytes < 1 << 20 ? (bytes >> 10) + " KiB" : String.format("%.1f MiB", bytes / 1048576.0);
+    }
+
+    /** Files are in: load the assets, then READY lets the player in; the loading screen gives way. */
+    private static void finishLoading(Manifest m, Runnable ready) {
+        loadingAssets = true;
+        whenLoaded(m, () -> {
+            loadingAssets = false;
+            ready.run();
+            if (ClientCompat.screen() instanceof LoadingScreen l) ClientCompat.setScreen(l.previous);
+        });
+    }
+
+    /** {@code then} on the render thread once the assets of {@code m} are in (or after 2 min, so a stuck reload can't hold the player). */
+    private static void whenLoaded(Manifest m, Runnable then) {
+        CompletableFuture<Void> f = assets.apply(m).completeOnTimeout(null, 2, TimeUnit.MINUTES);
+        f.whenComplete((v, e) -> {
+            if (e != null) Troupe.LOG.warn("Loading resource assets failed", e);
+            Minecraft.getInstance().execute(then);
+        });
     }
 
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */
@@ -139,12 +200,15 @@ public final class TroupeClient implements ClientModInitializer {
      * A pushed manifest is fully in the cache: the server's running resources changed while we're in the world, or
      * (before 1.20.2) the first download is done, and START follows.
      */
-    private static void applyManifest(Manifest m) {
+    private static void applyManifest(Manifest m, Runnable ready) {
         manifest = m;
-        if (!started) return;
+        if (!started) {
+            finishLoading(m, ready);
+            return;
+        }
         Troupe.LOG.info("Server resources changed: {}", m.generations());
         host.apply(ResourceHost.entries(m, CACHE), m.generations());
-        assets.apply(m);
+        whenLoaded(m, ready);
     }
 
     private static void reset() {

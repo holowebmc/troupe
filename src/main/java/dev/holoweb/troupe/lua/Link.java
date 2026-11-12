@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
@@ -35,7 +36,7 @@ public final class Link implements Network {
     private final Out out;
     private final Runnable onStart;
     private final Path cache;
-    private final Consumer<Protocol.Manifest> onManifest;
+    private final BiConsumer<Protocol.Manifest, Runnable> onManifest;
     private ServerSync serverSync;
     private ServerResources nextPush;
     private Runnable afterPush;
@@ -49,18 +50,19 @@ public final class Link implements Network {
 
     /** Server side: one per player. */
     public Link(ResourceHost host, Peer peer, Out out) {
-        this(host, peer, out, () -> {}, null, m -> {});
+        this(host, peer, out, () -> {}, null, (m, ready) -> {});
     }
 
     /**
      * Client side: {@code onStart} runs when the server says its state is here and resources may start;
-     * {@code onManifest} when a pushed manifest is fully in {@code cache}.
+     * {@code onManifest} when a pushed manifest is fully in {@code cache}, with the {@code Runnable} that tells the
+     * server so (call it once the client is done with the files, e.g. assets loaded).
      */
-    public Link(ResourceHost host, Out out, Runnable onStart, Path cache, Consumer<Protocol.Manifest> onManifest) {
+    public Link(ResourceHost host, Out out, Runnable onStart, Path cache, BiConsumer<Protocol.Manifest, Runnable> onManifest) {
         this(host, null, out, onStart, cache, onManifest);
     }
 
-    private Link(ResourceHost host, Peer peer, Out out, Runnable onStart, Path cache, Consumer<Protocol.Manifest> onManifest) {
+    private Link(ResourceHost host, Peer peer, Out out, Runnable onStart, Path cache, BiConsumer<Protocol.Manifest, Runnable> onManifest) {
         this.host = host;
         this.peer = peer;
         this.out = out;
@@ -103,6 +105,11 @@ public final class Link implements Network {
     /** Server → client: everything the client needs before its resources start has been sent. */
     void start() {
         send(new Protocol.Out(Protocol.START));
+    }
+
+    /** Client: the download in progress, if any (for progress screens). */
+    public ClientSync download() {
+        return clientSync;
     }
 
     /** Server: the client should run {@code pack} now. One download at a time; a newer push waits for it. */
@@ -165,8 +172,9 @@ public final class Link implements Network {
                     }
                     Protocol.Manifest done = clientSync.receive(message);
                     if (done != null) {
+                        ClientSync sync = clientSync;
                         clientSync = null;
-                        onManifest.accept(done);
+                        onManifest.accept(done, sync::ready);
                     }
                 }
             }

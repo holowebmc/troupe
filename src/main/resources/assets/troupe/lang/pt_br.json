@@ -2,5 +2,10 @@
   "troupe.disconnect.missing_mod": "Este servidor precisa do mod Troupe.",
   "troupe.disconnect.sync_failed": "Troupe: %s",
   "troupe.assets.title": "As resources deste servidor têm texturas e sons",
-  "troupe.assets.question": "Aplicar? (como um pacote de recursos do servidor)"
+  "troupe.assets.question": "Aplicar? (como um pacote de recursos do servidor)",
+  "troupe.loading.title": "Carregando as resources do servidor",
+  "troupe.loading.checking": "Conferindo arquivos",
+  "troupe.loading.download": "Baixando %s de %s arquivos (%s / %s)",
+  "troupe.loading.assets": "Carregando texturas e sons",
+  "troupe.loading.cancelled": "Cancelado"
 }

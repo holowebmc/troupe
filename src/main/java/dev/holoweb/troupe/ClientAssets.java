@@ -12,10 +12,12 @@ import net.minecraft.network.chat.Component;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Resource {@code assets/} as server resource packs, pushed locally (no download): textures, models, sounds and lang
@@ -34,9 +36,14 @@ final class ClientAssets {
         this.cache = cache;
     }
 
-    /** Matches the packs to the server's running resources: new or changed assets push, gone ones pop. */
-    void apply(Manifest m) {
+    /**
+     * Matches the packs to the server's running resources: new or changed assets push, gone ones pop.
+     * @return done when every pushed pack is loaded, declined or failed
+     */
+    CompletableFuture<Void> apply(Manifest m) {
+        Minecraft mc = Minecraft.getInstance();
         String mcmeta = ClientCompat.packMcmeta();
+        List<CompletableFuture<Void>> loading = new ArrayList<>();
         for (String name : List.copyOf(pushed.keySet()))
             if (!m.resources().containsKey(name)) pop(name);
         for (String name : m.resources().keySet()) {
@@ -44,7 +51,8 @@ final class ClientAssets {
                 Path zip = AssetPacks.build(m, name, cache, cache.resolveSibling("packs"), mcmeta);
                 if (zip == null) pop(name);
                 else if (!zip.equals(pushed.get(name))) {
-                    Minecraft.getInstance().getDownloadedPackSource().pushLocalPack(id(name), zip);
+                    mc.getDownloadedPackSource().pushLocalPack(id(name), zip);
+                    loading.add(mc.getDownloadedPackSource().waitForPackFeedback(id(name)));
                     pushed.put(name, zip);
                     Troupe.LOG.info("Assets of {} pushed", name);
                 }
@@ -53,6 +61,7 @@ final class ClientAssets {
             }
         }
         askIfNeeded();
+        return CompletableFuture.allOf(loading.toArray(CompletableFuture[]::new));
     }
 
     void clear() {
@@ -103,6 +112,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 
 /^*
  * Resource {@code assets/} as the server resource pack, loaded locally (no download). Before 1.20.3 the game holds
@@ -117,45 +127,53 @@ import java.util.Objects;
 final class ClientAssets {
     private final Path cache;
     private Path pack;
-    /** Null until the player answered the prompt for this connection. *^/
+    /^* Null until the player answered the prompt for this connection. *^/
     private Boolean allowed;
 
     ClientAssets(Path cache) {
         this.cache = cache;
     }
 
-    /^* Rebuilds the one pack from the running resources and loads it if it changed. *^/
-    void apply(Manifest m) {
+    /^*
+     * Rebuilds the one pack from the running resources and loads it if it changed.
+     * @return done when the pack is loaded (or skipped)
+     *^/
+    CompletableFuture<Void> apply(Manifest m) {
         Path zip;
         try {
             zip = AssetPacks.build(m, List.copyOf(m.resources().keySet()), cache, cache.resolveSibling("packs"), ClientCompat.packMcmeta());
         } catch (IOException e) {
             Troupe.LOG.error("Couldn't build the resource assets", e);
-            return;
+            return CompletableFuture.completedFuture(null);
         }
-        if (Objects.equals(zip, pack)) return;
+        if (Objects.equals(zip, pack)) return CompletableFuture.completedFuture(null);
         Path before = pack;
         pack = zip;
-        if (zip == null) {
-            if (before != null) Minecraft.getInstance().getDownloadedPackSource().clearServerPack();
-            return;
-        }
         Minecraft mc = Minecraft.getInstance();
+        if (zip == null) return before == null ? CompletableFuture.completedFuture(null) : mc.getDownloadedPackSource().clearServerPack();
         ServerData server = mc.getCurrentServer();
         ServerData.ServerPackStatus status = server == null || mc.isLocalServer() ? ServerData.ServerPackStatus.ENABLED : server.getResourcePackStatus();
         if (status == ServerData.ServerPackStatus.PROMPT && allowed != null)
             status = allowed ? ServerData.ServerPackStatus.ENABLED : ServerData.ServerPackStatus.DISABLED;
         switch (status) {
-            case ENABLED -> load();
-            case DISABLED -> Troupe.LOG.info("Server resource packs are disabled for this server: Troupe assets stay off");
-            case PROMPT -> {
+            case ENABLED -> {
+                return load();
+            }
+            case DISABLED -> {
+                Troupe.LOG.info("Server resource packs are disabled for this server: Troupe assets stay off");
+                return CompletableFuture.completedFuture(null);
+            }
+            default -> {
+                CompletableFuture<Void> answered = new CompletableFuture<>();
                 Screen previous = ClientCompat.screen();
                 ClientCompat.setScreen(new ConfirmScreen(yes -> {
                     allowed = yes;
-                    if (yes) load();
                     ClientCompat.setScreen(previous);
+                    if (yes) load().whenComplete((v, e) -> answered.complete(null));
+                    else answered.complete(null);
                 }, Component.translatableWithFallback("troupe.assets.title", "This server's resources have textures and sounds"),
                         Component.translatableWithFallback("troupe.assets.question", "Apply them? (like a server resource pack)")));
+                return answered;
             }
         }
     }
@@ -166,10 +184,10 @@ final class ClientAssets {
         allowed = null;
     }
 
-    private void load() {
-        if (pack == null) return;
-        Minecraft.getInstance().getDownloadedPackSource().setServerPack(pack.toFile(), PackSource.SERVER);
-        Troupe.LOG.info("Resource assets loaded");
+    private CompletableFuture<Void> load() {
+        if (pack == null) return CompletableFuture.completedFuture(null);
+        Troupe.LOG.info("Loading resource assets");
+        return Minecraft.getInstance().getDownloadedPackSource().setServerPack(pack.toFile(), PackSource.SERVER);
     }
 }
 *///?}

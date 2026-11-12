@@ -35,7 +35,7 @@ public final class ClientSync {
         this.out = out;
     }
 
-    /** @return the manifest once every file is in the cache, else null */
+    /** @return the manifest once every file is in the cache, else null; then call {@link #ready()} */
     public Manifest receive(byte[] message) throws IOException {
         Protocol.In in = new Protocol.In(message);
         int type = in.type();
@@ -94,6 +94,26 @@ public final class ClientSync {
         return downloadedBytes;
     }
 
+    /** Files and bytes this download fetches (0 until MANIFEST): what wasn't in the cache already. */
+    public int wantedFiles() {
+        return wanted == null ? 0 : wanted.length;
+    }
+
+    public long wantedBytes() {
+        if (wanted == null) return 0;
+        long n = 0;
+        for (int i : wanted) n += manifest.blobs().get(i).size();
+        return n;
+    }
+
+    /**
+     * Tells the server everything is in: it lets the player in (or sends the next push). The caller decides when,
+     * e.g. once the assets are loaded too.
+     */
+    public void ready() {
+        out.accept(new Protocol.Out(Protocol.READY).toByteArray());
+    }
+
     public Path file(Blob b) {
         return cache.resolve(b.sha256());
     }
@@ -110,9 +130,7 @@ public final class ClientSync {
     }
 
     private Manifest finishIfDone() {
-        if (next < wanted.length) return null;
-        out.accept(new Protocol.Out(Protocol.READY).toByteArray());
-        return manifest;
+        return next < wanted.length ? null : manifest;
     }
 
     // ponytail: trusts size alone for cached blobs (no rehash on every join); verify on load if tampering matters.

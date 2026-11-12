@@ -41,7 +41,7 @@ class NetTest {
             } catch (ResourceException e) {
                 throw new AssertionError(e);
             }
-        }, null, m -> {});
+        }, null, (m, ready) -> ready.run());
         toClient = new Link(serverHost, new Peer("p1", "Ana"), out(msg -> wire.add(() -> deliver(toServer, msg))));
         links = new Links(serverHost);
         serverHost.setNetwork(links);

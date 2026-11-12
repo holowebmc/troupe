@@ -101,7 +101,10 @@ class SyncTest {
             public void send(byte[] msg, Runnable onSent) {
                 wire.add(() -> {
                     Manifest m = io(() -> client.receive(toClient.apply(msg)));
-                    if (m != null) done[0] = m;
+                    if (m != null) {
+                        done[0] = m;
+                        client.ready();
+                    }
                 });
                 if (onSent != null) wire.add(onSent);
             }
