@@ -413,10 +413,22 @@ public final class LuaRuntime {
         }
         boolean[] allowed = {true};
         for (LuaFunction fn : List.copyOf(fns)) spawn(fn, luaArgs, "event " + module + "." + event, (err, results) -> {
-            if (err != null) LOG.error("[{}] event {}.{}: {}", name, module, event, err);
+            if (err != null) logThrottled("[" + name + "] event " + module + "." + event + ": " + err);
             else if (results.first() == Constants.FALSE) allowed[0] = false;
         });
         return allowed[0];
+    }
+
+    /** Events can fire every frame: the same error is logged at most once every 5 s. */
+    private final Map<String, Long> recentErrors = new HashMap<>();
+
+    private void logThrottled(String message) {
+        long now = System.nanoTime();
+        Long last = recentErrors.get(message);
+        if (last != null && now - last < 5_000_000_000L) return;
+        if (recentErrors.size() > 256) recentErrors.clear();
+        recentErrors.put(message, now);
+        LOG.error(message);
     }
 
     Callback callback(LuaFunction fn) {

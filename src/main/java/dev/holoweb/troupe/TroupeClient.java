@@ -41,6 +41,7 @@ public final class TroupeClient implements ClientModInitializer {
     private static final ClientApi api = new ClientApi(host.modules());
     private static final ClientAssets assets = new ClientAssets(CACHE);
     private static final ClientHud hud = new ClientHud(host.modules(), host);
+    private static final WorldDraw world = new WorldDraw(host.modules(), host);
 
     // Written on the Netty thread (Fabric runs configuration receivers there), read from the render thread.
     private static volatile ClientSync sync;
@@ -127,6 +128,9 @@ public final class TroupeClient implements ClientModInitializer {
             link = null;
             host.stopAll();
             assets.clear();
+            hud.clear();
+            world.clear();
+            RenderFx.reset();
             host.setNetwork(null);
             host.resetState();
         }));
@@ -134,6 +138,11 @@ public final class TroupeClient implements ClientModInitializer {
         ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
         //?} else
         /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
+        RenderFx.register(host.modules(), host);
+        //? if >=26.1 {
+        net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents.COLLECT_SUBMITS.register(world::render);
+        //?} else
+        /*net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents.AFTER_ENTITIES.register(world::render);*/
         //? if >=1.21.6 {
         net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
                 net.minecraft.resources.Identifier.fromNamespaceAndPath("troupe", "hud"), (gui, delta) -> hud.draw(gui));
@@ -187,7 +196,13 @@ public final class TroupeClient implements ClientModInitializer {
         whenLoaded(m, () -> {
             loadingAssets = false;
             ready.run();
-            if (ClientCompat.screen() instanceof LoadingScreen l) ClientCompat.setScreen(l.previous);
+            if (ClientCompat.screen() instanceof LoadingScreen l) {
+                ClientCompat.setScreen(l.previous);
+                //? if <1.20.2 {
+                /*// The game only tells "Loading terrain" the world is in while it is the open screen; it wasn't (ours was), so tell it now.
+                if (l.previous instanceof net.minecraft.client.gui.screens.ReceivingLevelScreen r) r.loadingPacketsReceived();
+                *///?}
+            }
         });
     }
 

@@ -29,7 +29,7 @@ final class Compat {
         /*return p.serverLevel();*/
     }
 
-    static String dimension(ServerLevel level) {
+    static String dimension(net.minecraft.world.level.Level level) {
         //? if >=1.21.11 {
         return level.dimension().identifier().toString();
         //?} else
