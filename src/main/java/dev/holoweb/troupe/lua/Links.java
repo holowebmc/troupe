@@ -24,6 +24,12 @@ public final class Links implements Network {
         return byPlayer.get(playerId);
     }
 
+    /** The mod modules a player's client has (empty if offline, without Troupe, or before its HELLO). */
+    public List<String> clientModules(String playerId) {
+        Link l = byPlayer.get(playerId);
+        return l == null ? List.of() : l.clientModules();
+    }
+
     /** The player left: their pending calls fail and their state is dropped. */
     public void remove(String playerId) {
         Link link = byPlayer.remove(playerId);

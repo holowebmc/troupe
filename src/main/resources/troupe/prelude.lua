@@ -75,6 +75,11 @@ if players then
   function P:teleport(x, y, z, dim) return relay(pcall(players.teleport, self.id, x, y, z, dim)) end
   function P:give(item, count) return relay(pcall(players.give, self.id, item, count)) end
   function P:online() return relay(pcall(players.online, self.id)) end
+  function P:mods() return relay(pcall(players.mods, self.id)) end
+  function P:has_mod(name)
+    for _, m in ipairs(self:mods()) do if m == name then return true end end
+    return false
+  end
 end
 
 -- Client: keys.bind('b', fn) runs fn when b is pressed with no screen open.

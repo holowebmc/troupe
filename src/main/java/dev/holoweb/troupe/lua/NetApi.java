@@ -22,15 +22,20 @@ import java.util.Map;
  * The {@code net} and {@code state} globals of one resource, and what arrives for it from the other side.
  * <pre>
  * server: net.handle(name, format, fn(player, args))   net.emit(player, name, args)   net.broadcast(name, args)
- *         net.call(player, name, args)                  player.state.k = v              state.global.k = v
- * client: net.handle(name, fn(args))                    net.emit(name, args)            net.call(name, args)
+ *         net.call(player, name, args, {timeout = s})   player.state.k = v              state.global.k = v
+ * client: net.handle(name, fn(args))                    net.emit(name, args)            net.call(name, args, {timeout = s})
  *         state.player.k   state.global.k (read-only)   state.watch(k, fn)              state.watch_global(k, fn)
  * </pre>
  * Handlers on the server must declare the format of their arguments ({@link Schema}); calls return the handler's
- * first result.
+ * first result, or fail after {@code timeout} seconds (default {@value #DEFAULT_TIMEOUT}) without one.
  */
 final class NetApi {
     private record Handler(LuaFunction fn, Schema schema) {}
+
+    /** When a waiting {@code net.call} gives up, and what it says then. */
+    record Timeout(long nanos, String message) {}
+
+    static final double DEFAULT_TIMEOUT = 10;
 
     private final LuaRuntime rt;
     private final boolean server;
@@ -96,11 +101,21 @@ final class NetApi {
         rt.host.network().emit(rt.name, player, name, encode(args));
     }
 
-    /** {@code net.call} waiting in a task: client {@code (name, args)}, server {@code (player, name, args)}. */
-    void call(Varargs a, LuaRuntime.Done done) throws LuaError {
+    /**
+     * {@code net.call} waiting in a task: client {@code (name, args, opts)}, server {@code (player, name, args, opts)};
+     * {@code opts.timeout} in seconds.
+     */
+    Timeout call(Varargs a, LuaRuntime.Done done) throws LuaError {
         String player = server ? playerId(a.arg(1)) : null;
         int i = server ? 2 : 1;
         String name = a.arg(i).checkString();
+        double timeout = DEFAULT_TIMEOUT;
+        if (a.arg(i + 2) instanceof LuaTable opts && !opts.rawget("timeout").isNil()) {
+            timeout = opts.rawget("timeout").checkDouble();
+            if (!(timeout > 0)) throw new LuaError("net.call: timeout must be > 0 seconds");
+        } else if (!a.arg(i + 2).isNil()) {
+            throw new LuaError("bad argument #" + (i + 2) + " to 'call' (options table expected)");
+        }
         rt.host.network().call(rt.name, player, name, encode(a.arg(i + 1)), (ok, json) -> {
             try {
                 Object value = Json.decode(json);
@@ -110,6 +125,8 @@ final class NetApi {
                 done.done("bad reply to '" + name + "': " + e.getMessage(), Constants.NONE);
             }
         });
+        String seconds = timeout == Math.rint(timeout) ? String.valueOf((long) timeout) : String.valueOf(timeout);
+        return new Timeout((long) (timeout * 1e9), "net.call '" + name + "' got no reply in " + seconds + " s");
     }
 
     private String encode(LuaValue value) throws LuaError {

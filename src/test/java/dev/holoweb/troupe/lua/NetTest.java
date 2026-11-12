@@ -128,6 +128,43 @@ class NetTest {
     }
 
     @Test
+    void callsGiveUpAfterTheirTimeout() throws Exception {
+        resource("lento", "{}",
+                "server/main.lua", """
+                        net.handle('demora', { ms = 'number' }, function(player, args)
+                          timer.wait(args.ms)
+                          return 'tarde'
+                        end)""",
+                "client/main.lua", """
+                        async(function() see(select(2, pcall(net.call, 'demora', { ms = 5000 }, { timeout = 1 }))) end)
+                        async(function() see(select(2, pcall(net.call, 'demora', { ms = 60000 }))) end)
+                        see(select(2, pcall(net.call, 'demora', { ms = 1 }, { timeout = 0 })))""");
+        startBoth("lento");
+        assertEquals(1, client.size());
+        assertTrue(client.get(0).toString().contains("timeout must be > 0"), client.get(0).toString());
+        advance(1000);
+        assertTrue(client.get(1).toString().endsWith("net.call 'demora' got no reply in 1 s"), client.get(1).toString());
+        advance(5000); // the late reply arrives and is dropped
+        assertEquals(2, client.size(), client.toString());
+        advance(4000);
+        assertTrue(client.get(2).toString().endsWith("net.call 'demora' got no reply in 10 s"), client.get(2).toString());
+    }
+
+    @Test
+    void clientAnswersStartWithItsModules() throws Exception {
+        resource("x", "{}", "client/main.lua", "see('started')");
+        clientHost.modules().module("create").function("speed", a -> 1);
+        List<String> order = new java.util.ArrayList<>();
+        toClient.whenHello(() -> order.add("hello " + toClient.clientModules()));
+        assertEquals(List.of(), toClient.clientModules());
+        startBoth("x");
+        assertEquals(List.of("hello [create, probe]"), order);
+        toClient.whenHello(() -> order.add("again"));
+        assertEquals("again", order.get(1), "after HELLO it runs right away");
+        assertEquals(List.of("started"), client);
+    }
+
+    @Test
     void serverHandlersMustDeclareTheirArguments() throws Exception {
         resource("x", "{}", "server/main.lua", "net.handle('y', function() end)");
         ResourceException e = assertThrows(ResourceException.class, () -> serverHost.start("x"));

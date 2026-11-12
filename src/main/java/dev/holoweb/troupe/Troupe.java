@@ -105,12 +105,15 @@ public final class Troupe implements ModInitializer {
                         downloading.remove(player.getUUID());
                         links.add(link);
                         if (!published.manifest().equals(now.manifest())) link.push(published);
-                        api.joined(player);
+                        link.whenHello(() -> api.joined(player));
                     });
                     return;
                 }
                 links.add(link);
                 if (!now.manifest().equals((got == null ? ServerResources.EMPTY : got).manifest())) link.push(now);
+                // on_join once the client answered START: by then scripts see its mod modules too
+                link.whenHello(() -> api.joined(player));
+                return;
             } else if (!published.manifest().resources().isEmpty()) {
                 handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
                 return;

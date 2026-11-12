@@ -30,6 +30,8 @@ import java.util.regex.Pattern;
  *   EVENT     string resource, string name, text json
  *   CALL      varint id, string resource, string name, text json
  *   REPLY     varint id, u8 ok, text json (the result, or the error message as a JSON string)
+ * play phase, client → server only
+ *   HELLO     varint count, strings: the client's mod modules (answering START; the server's players.on_join waits for it)
  * play phase, server → client only
  *   STATE     string resource, u8 global, string key, text json ("" removes the key)
  *   CLEAR     string resource (it stopped on the server: drop its state)
@@ -44,6 +46,9 @@ public final class Protocol {
     public static final int WANT = 0, READY = 1;     // client → server
     public static final int EVENT = 2, CALL = 3, REPLY = 4; // play phase, both ways
     public static final int STATE = 5, CLEAR = 6, START = 7; // play phase, server → client
+    public static final int HELLO = 8; // play phase, client → server
+    /** Most mod modules a HELLO may list. */
+    public static final int MAX_MODULES = 256;
 
     /** JSON budget of one message: serverbound custom payloads are capped at 32 KiB, clientbound at 1 MiB. */
     public static final int MAX_JSON_TO_SERVER = 30 * 1024, MAX_JSON_TO_CLIENT = 1000 * 1024;
@@ -236,7 +241,7 @@ public final class Protocol {
             throw new ProtocolException("varint too long");
         }
 
-        int count(int max) throws ProtocolException {
+        public int count(int max) throws ProtocolException {
             int n = varint();
             if (n > max) throw new ProtocolException("too many entries: " + n);
             return n;

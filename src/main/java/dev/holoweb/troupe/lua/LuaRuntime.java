@@ -98,7 +98,8 @@ public final class LuaRuntime {
 
     private record Step(Task task, Varargs args) {}
 
-    private record Sleep(long due, Task task, int wake) {}
+    /** Wakes {@code task} at {@code due}: with nothing ({@code timer.wait}) or with {@code error} (a timeout). */
+    private record Sleep(long due, Task task, int wake, String error) {}
 
     final String name;
     final Side side;
@@ -294,9 +295,13 @@ public final class LuaRuntime {
                 case "wait" -> {
                     double ms = rest.arg(1).checkDouble();
                     if (!(ms >= 0)) throw new LuaError("timer.wait: milliseconds must be >= 0");
-                    sleeping.add(new Sleep(host.now() + (long) (ms * 1e6), task, wake));
+                    sleeping.add(new Sleep(host.now() + (long) (ms * 1e6), task, wake, null));
                 }
-                case "call" -> net.call(rest, (err, results) -> wake(task, wake, err, results));
+                case "call" -> {
+                    // Whichever comes first wakes the task: the reply, or the timeout (a late reply is then dropped).
+                    NetApi.Timeout t = net.call(rest, (err, results) -> wake(task, wake, err, results));
+                    sleeping.add(new Sleep(host.now() + t.nanos(), task, wake, t.message()));
+                }
                 case "export" -> host.callExport(Values.str(rest.arg(1)), Values.str(rest.arg(2)), Values.toJava(this, rest, 3),
                         (err, values) -> {
                             if (err != null) {
@@ -329,7 +334,7 @@ public final class LuaRuntime {
         Sleep s;
         while ((s = sleeping.peek()) != null && now - s.due() >= 0) {
             sleeping.poll();
-            wake(s.task(), s.wake(), null, Constants.NONE);
+            wake(s.task(), s.wake(), s.error(), Constants.NONE);
         }
     }
 

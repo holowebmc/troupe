@@ -47,6 +47,11 @@ public final class ModuleRegistry implements Modules {
         return m;
     }
 
+    /** The modules mods registered (what {@code mods.*} reaches), sorted. */
+    public java.util.List<String> modNames() {
+        return modules.values().stream().filter(m -> !m.global).map(m -> m.name).sorted().toList();
+    }
+
     java.util.List<ModuleImpl> globals() {
         return modules.values().stream().filter(m -> m.global).toList();
     }

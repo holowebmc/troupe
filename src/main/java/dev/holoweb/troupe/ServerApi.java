@@ -41,6 +41,7 @@ import java.util.regex.Pattern;
  * players.list()  players.get(id|name)  players.on_join(fn(player))  players.on_leave(fn(player))
  *   (on_join also runs for every player already online when the resource starts or restarts)
  *   player:message(text)  player:pos()  player:teleport(x, y, z, dim?)  player:give(item, count?)  player:online()
+ *   player:mods() → the mod modules on their client (mods.* there)   player:has_mod(name)
  * chat.broadcast(text)  chat.on_message(fn(player, text))
  * command.register(name, fn(player|nil, args), { admin = false })
  * world.block(x, y, z, dim?) → id | nil    world.set_block(x, y, z, id, dim?) → ok   (loaded chunks only)
@@ -71,6 +72,7 @@ final class ServerApi {
                     return p == null ? null : peer(p);
                 })
                 .function("online", a -> find(a.string(0)) != null)
+                .function("mods", a -> host.network() instanceof dev.holoweb.troupe.lua.Links l ? l.clientModules(a.string(0)) : List.of())
                 .function("message", a -> {
                     player(a).sendSystemMessage(Component.literal(a.string(1)));
                     return null;
