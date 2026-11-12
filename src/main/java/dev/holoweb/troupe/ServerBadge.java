@@ -5,10 +5,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 
 //? if >=26.1 {
@@ -19,12 +16,15 @@ import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
 *///?}
 
 /**
- * A small "T" on the bottom-right corner of a server's icon in the multiplayer list when its ping says it runs Troupe;
- * hovering it lists the resources and the download size. Red when the server speaks another Troupe protocol.
+ * A small "✔ troupe" chip after the server's name in the multiplayer list when its ping says it runs Troupe ("✖", red,
+ * when it speaks another protocol). Clicking it opens {@link ServerInfoScreen}.
  */
 public final class ServerBadge {
-    private static final int SIZE = 9;
+    private static final Component LABEL = Component.literal("troupe");
+    private static final Component HINT = Component.translatableWithFallback("troupe.badge.hint", "Click for details");
     private static final Map<ServerData, TroupeStatus.Info> infos = new MapMaker().weakKeys().makeMap();
+    /** Where each server's chip was last drawn (screen coordinates: x, y, w, h). */
+    private static final Map<ServerData, int[]> spots = new MapMaker().weakKeys().makeMap();
 
     private ServerBadge() {}
 
@@ -34,52 +34,54 @@ public final class ServerBadge {
         else infos.put(server, info);
     }
 
+    /** Lays the chip out after the name (row content at x, y, {@code width} wide); null when there's none. */
+    private static int[] spot(ServerData server, Font font, int x, int y, int width) {
+        if (!infos.containsKey(server)) {
+            spots.remove(server);
+            return null;
+        }
+        Panel.Chip chip = Panel.Chip.status(LABEL, infos.get(server).compatible(), false);
+        int w = chip.width(font);
+        int cx = Math.min(x + 32 + 3 + font.width(server.name) + 5, x + width - 60 - w); // clear of the player count
+        int[] s = {cx, y, w, chip.height()};
+        spots.put(server, s);
+        return s;
+    }
+
+    private static boolean over(int[] s, double mx, double my) {
+        return s != null && mx >= s[0] && mx < s[0] + s[2] && my >= s[1] && my < s[1] + s[3];
+    }
+
+    private static void chip(Panel.Canvas c, int[] s, boolean compatible, boolean hover) {
+        Panel.Chip.status(LABEL, compatible, hover).draw(c, s[0], s[1]);
+    }
+
     //? if >=26.1 {
     /** {@code x, y}: the row's content corner, where the 32×32 icon starts. */
-    public static void draw(GuiGraphicsExtractor g, ServerData server, int x, int y, int mouseX, int mouseY) {
-        TroupeStatus.Info info = infos.get(server);
-        if (info == null) return;
+    public static void draw(GuiGraphicsExtractor g, ServerData server, int x, int y, int width, int mouseX, int mouseY) {
         Font font = Minecraft.getInstance().font;
-        int bx = x + 32 - SIZE, by = y + 32 - SIZE;
-        g.fill(bx - 1, by - 1, bx + SIZE + 1, by + SIZE + 1, 0xFF000000);
-        g.fill(bx, by, bx + SIZE, by + SIZE, info.compatible() ? 0xFF7A4FD8 : 0xFFB03030);
-        g.text(font, "T", bx + (SIZE - font.width("T")) / 2 + 1, by + 1, 0xFFFFFFFF, false);
-        if (over(bx, by, mouseX, mouseY)) g.setComponentTooltipForNextFrame(font, tooltip(info), mouseX, mouseY);
+        int[] s = spot(server, font, x, y, width);
+        if (s == null) return;
+        boolean hover = over(s, mouseX, mouseY);
+        chip(Panel.canvas(g, font), s, infos.get(server).compatible(), hover);
+        if (hover) g.setTooltipForNextFrame(HINT, mouseX, mouseY);
     }
     //?} else {
-    /*public static void draw(GuiGraphics g, JoinMultiplayerScreen screen, ServerData server, int x, int y, int mouseX, int mouseY) {
-        TroupeStatus.Info info = infos.get(server);
-        if (info == null) return;
+    /*public static void draw(GuiGraphics g, JoinMultiplayerScreen screen, ServerData server, int x, int y, int width, int mouseX, int mouseY) {
         Font font = Minecraft.getInstance().font;
-        int bx = x + 32 - SIZE, by = y + 32 - SIZE;
-        g.fill(bx - 1, by - 1, bx + SIZE + 1, by + SIZE + 1, 0xFF000000);
-        g.fill(bx, by, bx + SIZE, by + SIZE, info.compatible() ? 0xFF7A4FD8 : 0xFFB03030);
-        g.drawString(font, "T", bx + (SIZE - font.width("T")) / 2 + 1, by + 1, 0xFFFFFF, false);
-        if (over(bx, by, mouseX, mouseY)) screen.setToolTip(tooltip(info));
+        int[] s = spot(server, font, x, y, width);
+        if (s == null) return;
+        boolean hover = over(s, mouseX, mouseY);
+        chip(Panel.canvas(g, font), s, infos.get(server).compatible(), hover);
+        if (hover) screen.setToolTip(java.util.List.of(HINT));
     }
     *///?}
 
-    private static boolean over(int bx, int by, int mouseX, int mouseY) {
-        return mouseX >= bx - 1 && mouseX < bx + SIZE + 1 && mouseY >= by - 1 && mouseY < by + SIZE + 1;
-    }
-
-    private static List<Component> tooltip(TroupeStatus.Info info) {
-        List<Component> lines = new ArrayList<>();
-        lines.add(Component.translatableWithFallback("troupe.badge.title", "Troupe: %s resources, %s",
-                info.resources(), size(info.size())).withStyle(ChatFormatting.LIGHT_PURPLE));
-        if (!info.names().isEmpty()) {
-            String names = String.join(", ", info.names()) + (info.resources() > info.names().size() ? ", …" : "");
-            lines.add(Component.literal(names).withStyle(ChatFormatting.GRAY));
-        }
-        if (!info.compatible())
-            lines.add(Component.translatableWithFallback("troupe.badge.incompatible", "Another Troupe version (server protocol %s, this client %s)",
-                    info.protocol(), dev.holoweb.troupe.net.Protocol.VERSION).withStyle(ChatFormatting.RED));
-        return lines;
-    }
-
-    private static String size(long bytes) {
-        if (bytes < 1024) return bytes + " B";
-        if (bytes < 1 << 20) return (bytes >> 10) + " KiB";
-        return String.format("%.1f MiB", bytes / 1048576.0);
+    /** A click on the server's row: on the chip, opens the details (and the row ignores the click). */
+    public static boolean click(ServerData server, double mouseX, double mouseY) {
+        TroupeStatus.Info info = infos.get(server);
+        if (info == null || !over(spots.get(server), mouseX, mouseY)) return false;
+        ClientCompat.setScreen(new ServerInfoScreen(ClientCompat.screen(), server, info));
+        return true;
     }
 }

@@ -80,7 +80,7 @@ tasks {
             "java" to javaVersion.majorVersion,
             "loader" to project.property("deps.fabric_loader"),
             // Mixins whose targets exist only on some versions.
-            "client_mixins" to if (below("1.20.3")) "" else ", \"DownloadedPackSourceMixin\"",
+            "client_mixins" to if (below("1.20.3")) "" else ", \"DownloadedPackSourceMixin\", \"CommonListenerAccess\"",
         )
         inputs.properties(props)
         filesMatching(listOf("fabric.mod.json", "*.mixins.json")) { expand(props) }

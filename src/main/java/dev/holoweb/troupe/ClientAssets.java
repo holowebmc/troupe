@@ -54,6 +54,7 @@ public final class ClientAssets {
                 Path zip = AssetPacks.build(m, name, new BlobCache(cache, m.key()), cache.resolveSibling("packs"), mcmeta);
                 if (zip == null) pop(name);
                 else if (!zip.equals(pushed.get(name))) {
+                    QuietOverlay.request();
                     mc.getDownloadedPackSource().pushLocalPack(id(name), zip);
                     loading.add(mc.getDownloadedPackSource().waitForPackFeedback(id(name)));
                     pushed.put(name, zip);
@@ -88,18 +89,28 @@ public final class ClientAssets {
             case PROMPT -> {
                 asked = true;
                 Screen previous = ClientCompat.screen();
-                ClientCompat.setScreen(new ConfirmScreen(yes -> {
+                ClientCompat.setScreen(question(yes -> {
                     if (yes) mc.getDownloadedPackSource().allowServerPacks();
                     else mc.getDownloadedPackSource().rejectServerPacks();
                     ClientCompat.setScreen(previous);
-                }, Component.translatableWithFallback("troupe.assets.title", "This server's resources have textures and sounds"),
-                        Component.translatableWithFallback("troupe.assets.question", "Apply them? (like a server resource pack)")));
+                }));
             }
         }
     }
 
     private void pop(String name) {
-        if (pushed.remove(name) != null) Minecraft.getInstance().getDownloadedPackSource().popPack(id(name));
+        if (pushed.remove(name) == null) return;
+        QuietOverlay.request();
+        Minecraft.getInstance().getDownloadedPackSource().popPack(id(name));
+    }
+
+    /** The "Server Resource Packs: Prompt" question, as a Troupe card. */
+    private static Screen question(it.unimi.dsi.fastutil.booleans.BooleanConsumer answer) {
+        return new CardConfirm(ServerApi.id("minecraft:textures/item/painting.png"),
+                Component.translatableWithFallback("troupe.assets.title", "Textures and sounds"),
+                Component.translatableWithFallback("troupe.assets.question", "This server's resources bring their own textures, models and sounds. Apply them, like a server resource pack?"),
+                Component.translatableWithFallback("troupe.assets.apply", "Apply"),
+                Component.translatableWithFallback("troupe.assets.skip", "Not now"), answer);
     }
 
     private static UUID id(String resource) {
@@ -165,7 +176,11 @@ final class ClientAssets {
         Path before = pack;
         pack = zip;
         Minecraft mc = Minecraft.getInstance();
-        if (zip == null) return before == null ? CompletableFuture.completedFuture(null) : mc.getDownloadedPackSource().clearServerPack();
+        if (zip == null) {
+            if (before == null) return CompletableFuture.completedFuture(null);
+            QuietOverlay.request();
+            return mc.getDownloadedPackSource().clearServerPack();
+        }
         ServerData server = mc.getCurrentServer();
         ServerData.ServerPackStatus status = server == null || mc.isLocalServer() ? ServerData.ServerPackStatus.ENABLED : server.getResourcePackStatus();
         if (status == ServerData.ServerPackStatus.PROMPT && allowed != null)
@@ -181,13 +196,12 @@ final class ClientAssets {
             default -> {
                 CompletableFuture<Void> answered = new CompletableFuture<>();
                 Screen previous = ClientCompat.screen();
-                ClientCompat.setScreen(new ConfirmScreen(yes -> {
+                ClientCompat.setScreen(question(yes -> {
                     allowed = yes;
                     ClientCompat.setScreen(previous);
                     if (yes) load().whenComplete((v, e) -> answered.complete(null));
                     else answered.complete(null);
-                }, Component.translatableWithFallback("troupe.assets.title", "This server's resources have textures and sounds"),
-                        Component.translatableWithFallback("troupe.assets.question", "Apply them? (like a server resource pack)")));
+                }));
                 return answered;
             }
         }
@@ -207,7 +221,17 @@ final class ClientAssets {
     private CompletableFuture<Void> load() {
         if (pack == null) return CompletableFuture.completedFuture(null);
         Troupe.LOG.info("Loading resource assets");
+        QuietOverlay.request();
         return Minecraft.getInstance().getDownloadedPackSource().setServerPack(pack.toFile(), PackSource.SERVER);
+    }
+
+    /^* The "Server Resource Packs: Prompt" question, as a Troupe card. *^/
+    private static Screen question(it.unimi.dsi.fastutil.booleans.BooleanConsumer answer) {
+        return new CardConfirm(ServerApi.id("minecraft:textures/item/painting.png"),
+                Component.translatableWithFallback("troupe.assets.title", "Textures and sounds"),
+                Component.translatableWithFallback("troupe.assets.question", "This server's resources bring their own textures, models and sounds. Apply them, like a server resource pack?"),
+                Component.translatableWithFallback("troupe.assets.apply", "Apply"),
+                Component.translatableWithFallback("troupe.assets.skip", "Not now"), answer);
     }
 }
 *///?}

@@ -25,6 +25,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
@@ -53,6 +54,8 @@ public final class TroupeClient implements ClientModInitializer {
     private static boolean started;
     /** Files are in, assets are loading: what the loading screen says. */
     private static volatile boolean loadingAssets;
+    /** The server being joined while configuring, when {@code getCurrentServer()} can't see it yet. */
+    private static volatile net.minecraft.client.multiplayer.ServerData joining;
 
     public static Manifest manifest() {
         return manifest;
@@ -69,36 +72,25 @@ public final class TroupeClient implements ClientModInitializer {
         //? if >=1.20.5 {
         ClientConfigurationConnectionEvents.INIT.register((handler, client) -> {
             reset();
+            gate = new Gate();
+            joining = ((dev.holoweb.troupe.mixin.CommonListenerAccess) (Object) handler).troupe$serverData();
             manifest = Manifest.EMPTY;
             ClientAssets.deleteBuilt(CACHE); // the last server's packs were popped when we left it
         });
         ClientConfigurationConnectionEvents.DISCONNECT.register((handler, client) -> {
             reset();
+            if (!manifest.resources().isEmpty()) QuietOverlay.request();
             client.execute(assets::clear);
         });
 
         // The player stays in configuration until READY: files in the cache and assets loaded.
         ClientConfigurationNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            if (sync == null) {
-                sync = new ClientSync(CACHE, m -> ctx.responseSender().sendPacket(new TroupePayload(m)));
-                Minecraft.getInstance().execute(() -> showLoading(() -> sync, () -> ctx.responseSender().disconnect(CANCELLED)));
-            }
-            ClientSync s = sync;
-            try {
-                Manifest done = s.receive(payload.data());
-                if (done != null) {
-                    Troupe.LOG.info("{} resources ready ({} files downloaded, {} KiB): {}", done.resources().size(),
-                            s.downloadedFiles(), s.downloadedBytes() >> 10, done.resources().keySet());
-                    manifest = done;
-                    loadingAssets = true;
-                    sync = null;
-                    Minecraft.getInstance().execute(() -> finishLoading(done, s::ready));
-                }
-            } catch (IOException e) {
-                Troupe.LOG.warn("Resource download failed", e);
-                reset();
-                ctx.responseSender().disconnect(Component.translatableWithFallback("troupe.disconnect.sync_failed", "Troupe: %s", e.getMessage()));
-            }
+            var sender = ctx.responseSender();
+            Runnable cancel = () -> sender.disconnect(CANCELLED);
+            Gate g = gate;
+            if (g.let(payload.data(), m -> Minecraft.getInstance().execute(() -> showJoin(m, () -> sync, cancel,
+                    () -> g.open().forEach(held -> configMessage(held, sender))))))
+                configMessage(payload.data(), sender);
         });
         //?}
 
@@ -108,6 +100,7 @@ public final class TroupeClient implements ClientModInitializer {
             started = false;
             //? if <1.20.5 {
             /*manifest = Manifest.EMPTY; // no configuration phase: the manifest comes in play
+            gate = new Gate();
             ClientAssets.deleteBuilt(CACHE);
             *///?}
             link = new Link(host, new Link.Out() {
@@ -123,17 +116,22 @@ public final class TroupeClient implements ClientModInitializer {
             loadingAssets = false;
             host.setNetwork(link);
         }));
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> client.execute(() -> {
-            if (link != null) link.close();
-            link = null;
-            host.stopAll();
-            assets.clear();
-            hud.clear();
-            world.clear();
-            RenderFx.reset();
-            host.setNetwork(null);
-            host.resetState();
-        }));
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            // Right away: before 1.20.2 the game drops the server pack as it leaves.
+            if (!manifest.resources().isEmpty()) QuietOverlay.request();
+            client.execute(() -> {
+                join = null;
+                if (link != null) link.close();
+                link = null;
+                host.stopAll();
+                assets.clear();
+                hud.clear();
+                world.clear();
+                RenderFx.reset();
+                host.setNetwork(null);
+                host.resetState();
+            });
+        });
         //? if >=1.20.5 {
         ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
         //?} else
@@ -154,14 +152,49 @@ public final class TroupeClient implements ClientModInitializer {
         });
     }
 
+    //? if >=1.20.5 {
+    /** One message of the configuration-phase download (Netty thread, or the render thread for held ones). */
+    private static void configMessage(byte[] data, net.fabricmc.fabric.api.networking.v1.PacketSender sender) {
+        if (sync == null) {
+            sync = new ClientSync(CACHE, m -> sender.sendPacket(new TroupePayload(m)));
+            Minecraft.getInstance().execute(() -> showJoin(null, () -> sync, () -> sender.disconnect(CANCELLED), () -> {}));
+        }
+        ClientSync s = sync;
+        try {
+            Manifest done = s.receive(data);
+            if (done != null) {
+                Troupe.LOG.info("{} resources ready ({} files downloaded, {} KiB): {}", done.resources().size(),
+                        s.downloadedFiles(), s.downloadedBytes() >> 10, done.resources().keySet());
+                manifest = done;
+                loadingAssets = true;
+                sync = null;
+                Minecraft.getInstance().execute(() -> finishLoading(done, s::ready));
+            }
+        } catch (IOException e) {
+            Troupe.LOG.warn("Resource download failed", e);
+            reset();
+            sender.disconnect(Component.translatableWithFallback("troupe.disconnect.sync_failed", "Troupe: %s", e.getMessage()));
+        }
+    }
+    //?}
+
     private static void receive(TroupePayload payload, LocalPlayer player) {
         if (link == null) return;
+        Link l = link;
+        Runnable cancel = () -> player.connection.getConnection().disconnect(CANCELLED);
+        Gate g = gate;
+        if (g.let(payload.data(), m -> showJoin(m, l::download, cancel, () -> g.open().forEach(held -> playMessage(held, player)))))
+            playMessage(payload.data(), player);
+    }
+
+    private static void playMessage(byte[] data, LocalPlayer player) {
+        if (link == null) return;
         try {
-            link.receive(payload.data());
-            // Before 1.20.2 the first download happens here, in the world: hold the player on the loading screen.
-            if (!started && link.download() != null && !(ClientCompat.screen() instanceof LoadingScreen)) {
+            link.receive(data);
+            // Before 1.20.2 the first download happens here, in the world: hold the player on the join window.
+            if (!started && link.download() != null && join == null) {
                 Link l = link;
-                showLoading(l::download, () -> player.connection.getConnection().disconnect(CANCELLED));
+                showJoin(null, l::download, () -> player.connection.getConnection().disconnect(CANCELLED), () -> {});
             }
         } catch (IOException e) {
             Troupe.LOG.warn("Troupe protocol error from the server: {}", e.getMessage());
@@ -171,39 +204,149 @@ public final class TroupeClient implements ClientModInitializer {
 
     private static final Component CANCELLED = Component.translatableWithFallback("troupe.loading.cancelled", "Cancelled");
 
-    private static void showLoading(Supplier<ClientSync> download, Runnable cancel) {
-        if (ClientCompat.screen() instanceof LoadingScreen) return;
-        ClientCompat.setScreen(new LoadingScreen(ClientCompat.screen(), () -> status(download.get()), () -> {
+    /** The join window of this connection (render thread), from the first Troupe packet until the player is in. */
+    private static JoinScreen join;
+
+    /** Opens the join window (once per connection): asking about {@code asking} first, or loading right away when null. */
+    private static void showJoin(Manifest asking, Supplier<ClientSync> download, Runnable cancel, Runnable onJoin) {
+        if (join != null) return;
+        join = new JoinScreen(ClientCompat.screen(), asking, () -> status(download.get()), () -> {
             ClientSync s = download.get();
             return loadingAssets || s == null || s.wantedBytes() == 0 ? -1 : (double) s.downloadedBytes() / s.wantedBytes();
-        }, cancel));
+        }, cancel, onJoin);
+        ClientCompat.setScreen(join);
+    }
+
+    /** This connection's gate (a new one per connection). */
+    private static volatile Gate gate = new Gate();
+
+    /**
+     * Holds a connection's Troupe messages until the player says Join, the first time on a server with resources:
+     * the download only starts when the client answers the MANIFEST, so nothing is fetched before that.
+     */
+    private static final class Gate {
+        private List<byte[]> held;
+        private boolean decided, open;
+
+        /** @return true to handle {@code message} now; otherwise it's held, and the first one held calls {@code ask} */
+        synchronized boolean let(byte[] message, java.util.function.Consumer<Manifest> ask) {
+            if (open) return true;
+            if (!decided) {
+                decided = true;
+                Manifest m = peek(message);
+                if (m == null || m.resources().isEmpty() || !mustAsk()) {
+                    open = true;
+                    return true;
+                }
+                held = new java.util.ArrayList<>();
+                held.add(message);
+                ask.accept(m);
+                return false;
+            }
+            held.add(message);
+            return false;
+        }
+
+        /** Join: lets everything through; returns what was held, in order. */
+        synchronized List<byte[]> open() {
+            open = true;
+            List<byte[]> h = held == null ? List.of() : held;
+            held = null;
+            return h;
+        }
+
+        private static Manifest peek(byte[] message) {
+            try {
+                Protocol.In in = new Protocol.In(message);
+                return in.type() == Protocol.MANIFEST ? Protocol.decodeManifest(in) : null;
+            } catch (IOException | RuntimeException e) {
+                return null; // the download will say what's wrong
+            }
+        }
     }
 
     private static Component status(ClientSync s) {
         if (loadingAssets) return Component.translatableWithFallback("troupe.loading.assets", "Loading textures and sounds");
         if (s == null || s.wantedFiles() == 0) return Component.translatableWithFallback("troupe.loading.checking", "Checking files");
         return Component.translatableWithFallback("troupe.loading.download", "Downloading %s of %s files (%s / %s)",
-                s.downloadedFiles(), s.wantedFiles(), size(s.downloadedBytes()), size(s.wantedBytes()));
+                s.downloadedFiles(), s.wantedFiles(), Panel.size(s.downloadedBytes()), Panel.size(s.wantedBytes()));
     }
 
-    private static String size(long bytes) {
-        return bytes < 1 << 20 ? (bytes >> 10) + " KiB" : String.format("%.1f MiB", bytes / 1048576.0);
-    }
-
-    /** Files are in: load the assets, then READY lets the player in; the loading screen gives way. */
+    /** Files are in: load the assets, then READY lets the player in; the join window gives way. */
     private static void finishLoading(Manifest m, Runnable ready) {
         loadingAssets = true;
         whenLoaded(m, () -> {
             loadingAssets = false;
+            JoinScreen window = join;
+            join = null;
             ready.run();
-            if (ClientCompat.screen() instanceof LoadingScreen l) {
-                ClientCompat.setScreen(l.previous);
-                //? if <1.20.2 {
-                /*// The game only tells "Loading terrain" the world is in while it is the open screen; it wasn't (ours was), so tell it now.
-                if (l.previous instanceof net.minecraft.client.gui.screens.ReceivingLevelScreen r) r.loadingPacketsReceived();
-                *///?}
-            }
+            if (window != null && ClientCompat.screen() == window) restore(window.previous);
         });
+    }
+
+    private static void restore(net.minecraft.client.gui.screens.Screen screen) {
+        ClientCompat.setScreen(screen);
+        //? if <1.20.2 {
+        /*// The game only tells "Loading terrain" the world is in while it is the open screen; it wasn't (ours was), so tell it now.
+        if (screen instanceof net.minecraft.client.gui.screens.ReceivingLevelScreen r) r.loadingPacketsReceived();
+        *///?}
+    }
+
+    private static final Path TRUSTED = CACHE.resolveSibling("trusted_servers.txt");
+
+    /** Whether joining this server needs the player's word (singleplayer never does). */
+    private static boolean mustAsk() {
+        if (Minecraft.getInstance().isLocalServer()) return false;
+        var server = server();
+        return server == null || !trusted(server.ip);
+    }
+
+    /** The server being joined or played on (null in singleplayer). */
+    static net.minecraft.client.multiplayer.ServerData server() {
+        var current = Minecraft.getInstance().getCurrentServer();
+        return current != null ? current : joining;
+    }
+
+    private static String address(String ip) {
+        return ip.trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /** The player allowed the scripts of the server at {@code ip}. */
+    static boolean trusted(String ip) {
+        return trustedSet().contains(address(ip));
+    }
+
+    /** The player said Join: the server being joined won't ask again. */
+    static void trustCurrent() {
+        var server = server();
+        if (server == null || trusted(server.ip)) return;
+        var all = trustedSet();
+        all.add(address(server.ip));
+        saveTrusted(all);
+    }
+
+    /** Asks again next time on the server at {@code ip}. */
+    static void forget(String ip) {
+        var all = trustedSet();
+        if (all.remove(address(ip))) saveTrusted(all);
+    }
+
+    private static java.util.Set<String> trustedSet() {
+        try {
+            return Files.exists(TRUSTED) ? new java.util.TreeSet<>(Files.readAllLines(TRUSTED, StandardCharsets.UTF_8)) : new java.util.TreeSet<>();
+        } catch (IOException e) {
+            Troupe.LOG.warn("Couldn't read {}", TRUSTED, e);
+            return new java.util.TreeSet<>();
+        }
+    }
+
+    private static void saveTrusted(java.util.Set<String> all) {
+        try {
+            Files.createDirectories(TRUSTED.getParent());
+            Files.write(TRUSTED, all, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            Troupe.LOG.warn("Couldn't save {}", TRUSTED, e);
+        }
     }
 
     /** {@code then} on the render thread once the assets of {@code m} are in (or after 2 min, so a stuck reload can't hold the player). */
@@ -248,6 +391,7 @@ public final class TroupeClient implements ClientModInitializer {
     }
 
     private static void reset() {
+        Minecraft.getInstance().execute(() -> join = null);
         ClientSync s = sync;
         if (s != null) s.close();
         sync = null;
