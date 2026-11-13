@@ -81,7 +81,7 @@ public final class ClientAssets {
     /** Pushed packs wait in the pack manager until server packs are allowed: ask if the player wants to be asked. */
     private void askIfNeeded() {
         Minecraft mc = Minecraft.getInstance();
-        ServerData server = mc.getCurrentServer();
+        ServerData server = TroupeClient.server(); // while configuring the game itself doesn't know the server yet
         if (pushed.isEmpty() || asked || server == null || mc.isLocalServer()) return;
         switch (server.getResourcePackStatus()) {
             case ENABLED -> {}
