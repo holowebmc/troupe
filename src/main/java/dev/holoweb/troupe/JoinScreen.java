@@ -37,6 +37,8 @@ final class JoinScreen extends CardScreen {
     private final Runnable onJoin;
     /** Still asking: what the server's manifest announced (null once loading). */
     private Protocol.Manifest asking;
+    /** Mods of this client the server's scripts will reach. */
+    private final List<String> mods;
     private ServerIcon icon;
 
     /**
@@ -47,6 +49,7 @@ final class JoinScreen extends CardScreen {
         super(asking != null ? ASK : LOADING);
         this.previous = previous;
         this.asking = asking;
+        this.mods = asking == null ? List.of() : TroupeClient.installedModules(asking.modules());
         this.status = status;
         this.progress = progress;
         this.cancel = cancel;
@@ -58,7 +61,7 @@ final class JoinScreen extends CardScreen {
     }
 
     private void join() {
-        TroupeClient.trustCurrent();
+        TroupeClient.trustCurrent(mods);
         asking = null;
         rebuildWidgets();
         onJoin.run();
@@ -108,7 +111,11 @@ final class JoinScreen extends CardScreen {
 
     @Override
     protected List<Component> cornerTooltip() {
-        return HELP;
+        if (mods.isEmpty()) return HELP;
+        List<Component> all = new java.util.ArrayList<>(HELP);
+        all.add(Component.translatableWithFallback("troupe.trust.mods.title", "Through mods you have installed:").withStyle(ChatFormatting.WHITE));
+        for (String module : mods) all.add(Component.literal("➜ ").withStyle(ChatFormatting.GOLD).append(TroupeClient.moduleNote(module).copy().withStyle(ChatFormatting.GRAY)));
+        return all;
     }
 
     private Component announced() {
@@ -118,7 +125,7 @@ final class JoinScreen extends CardScreen {
 
     @Override
     protected int bodyHeight(int inner) {
-        if (asking != null) return Panel.lines(font, INTRO, inner, 3) * 10 + 4 + 9;
+        if (asking != null) return Panel.lines(font, INTRO, inner, 3) * 10 + 4 + 9 + (mods.isEmpty() ? 0 : 11);
         return 9 + 6 + 3;
     }
 
@@ -135,6 +142,10 @@ final class JoinScreen extends CardScreen {
         if (asking != null) {
             int h = Panel.wrapped(c, INTRO, left, top, inner, 3, Panel.TEXT);
             c.text(announced(), left, top + h + 4, Panel.MUTED);
+            if (!mods.isEmpty()) {
+                String line = Component.translatableWithFallback("troupe.trust.mods", "They also use your mods: %s", String.join(", ", mods)).getString();
+                c.text(Component.literal(c.font().plainSubstrByWidth(line, inner)), left, top + h + 4 + 11, Panel.AMBER);
+            }
             return;
         }
         double p = progress.getAsDouble();

@@ -41,7 +41,7 @@ import java.util.regex.Pattern;
  * players.list()  players.get(id|name)  players.on_join(fn(player))  players.on_leave(fn(player))
  *   (on_join also runs for every player already online when the resource starts or restarts)
  *   player:message(text)  player:pos()  player:teleport(x, y, z, dim?)  player:give(item, count?)  player:online()
- *   player:mods() → the mod modules on their client (mods.* there)   player:has_mod(name)
+ *   player:mods() → the mod modules on their client (mods.* there)   player:has_mod(name)   player:mod_version(name)
  * chat.broadcast(text)  chat.on_message(fn(player, text))
  *   player:has_permission('banco.admin') → what a permissions mod (LuckPerms...) says; operators when none decides
  * command.register(name, fn(player|nil, args), { admin = false, permission = 'banco.sacar' })
@@ -94,6 +94,7 @@ final class ServerApi {
                 })
                 .function("online", a -> find(a.string(0)) != null)
                 .function("mods", a -> host.network() instanceof dev.holoweb.troupe.lua.Links l ? l.clientModules(a.string(0)) : List.of())
+                .function("mod_version", a -> host.network() instanceof dev.holoweb.troupe.lua.Links l ? l.clientModuleVersion(a.string(0), a.string(1)) : null)
                 .function("message", a -> {
                     player(a).sendSystemMessage(Component.literal(a.string(1)));
                     return null;
@@ -219,6 +220,10 @@ final class ServerApi {
                 .function("keys", a -> store().keys(a.resource()));
 
         game = new GameApi(modules, this);
+        // A mod returns or emits the game's own objects and scripts get the usual handles; Args.as goes back.
+        modules.convert(ServerPlayer.class, ServerApi::peer, o -> handleId(o) == null ? null : find(handleId(o)));
+        modules.convert(net.minecraft.world.entity.Entity.class, GameApi::handle, o -> handleId(o) == null ? null : game.find(handleId(o)));
+        modules.convert(ItemStack.class, GameApi::item);
         host.onStop(game::forget);
         new GameEvents(modules);
         new ScoreApi(modules, host, this);
@@ -298,6 +303,11 @@ final class ServerApi {
                     (resource, enter, id) -> modules.emitTo(resource, zone, enter ? "enter" : "leave", id, peer));
         }
         if (store != null) store.flush();
+    }
+
+    /** The id of a player or entity handle as it comes from Lua: the handle table or the id itself. */
+    private static String handleId(Object o) {
+        return o instanceof String s ? s : o instanceof Map<?, ?> m && m.get("id") instanceof String s ? s : null;
     }
 
     static Peer peer(ServerPlayer p) {

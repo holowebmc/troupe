@@ -153,7 +153,7 @@ class SyncTest {
 
     private static Protocol.In manifest(int version, int min, int trailing) throws ProtocolException {
         Protocol.In in = new Protocol.In(new Protocol.Out(Protocol.MANIFEST).varint(version).varint(min)
-                .bytes(new byte[32]).varint(0).varint(0).string("").bytes(new byte[trailing]).toByteArray());
+                .bytes(new byte[32]).varint(0).varint(0).string("").varint(0).bytes(new byte[trailing]).toByteArray());
         in.type();
         return in;
     }

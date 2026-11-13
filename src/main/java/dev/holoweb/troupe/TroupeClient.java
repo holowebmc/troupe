@@ -66,6 +66,7 @@ public final class TroupeClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         Troupe.registerModules(host.modules());
+        devStubs();
         deleteTree(CACHE.resolveSibling("cache")); // the unencrypted cache of Troupe 0.1
         ClientAssets.deleteBuilt(CACHE);
         if (FabricLoader.getInstance().isModLoaded("vitrine")) host.setUi(VitrineUi.create());
@@ -254,7 +255,7 @@ public final class TroupeClient implements ClientModInitializer {
             if (!decided) {
                 decided = true;
                 Manifest m = peek(message);
-                if (m == null || m.resources().isEmpty() || !mustAsk()) {
+                if (m == null || m.resources().isEmpty() || !mustAsk(m)) {
                     open = true;
                     return true;
                 }
@@ -329,10 +330,13 @@ public final class TroupeClient implements ClientModInitializer {
         }
         if (world.equals(askedWorld) || client.player == null || ClientCompat.screen() != null) return;
         askedWorld = world;
+        var question = Component.translatableWithFallback("troupe.world.question",
+                "This world brings %s resources of its own. Their scripts run in your game and can change this world. Allow them?", Troupe.pendingResources());
+        List<String> mods = installedModules(Troupe.pendingModules());
+        if (!mods.isEmpty()) question.append(" ").append(Component.translatableWithFallback("troupe.trust.mods", "They also use your mods: %s", String.join(", ", mods)));
         ClientCompat.setScreen(new CardConfirm(ServerApi.id("minecraft:textures/item/writable_book.png"),
                 Component.translatableWithFallback("troupe.world.title", "This world runs scripts"),
-                Component.translatableWithFallback("troupe.world.question",
-                        "This world brings %s resources of its own. Their scripts run in your game and can change this world. Allow them?", Troupe.pendingResources()),
+                question,
                 Component.translatableWithFallback("troupe.world.allow", "Allow"),
                 Component.translatableWithFallback("troupe.assets.skip", "Not now"), yes -> {
             ClientCompat.setScreen(null);
@@ -345,10 +349,26 @@ public final class TroupeClient implements ClientModInitializer {
     }
 
     /** Whether joining this server needs the player's word (singleplayer never does). */
-    private static boolean mustAsk() {
+    /** The first time on a server, and again when its resources reach a mod of this client the player wasn't told about. */
+    private static boolean mustAsk(Manifest m) {
         if (Minecraft.getInstance().isLocalServer()) return false;
         var server = server();
-        return server == null || !trusted(server.ip);
+        if (server == null || !trusted(server.ip)) return true;
+        var all = trustedSet();
+        for (String module : installedModules(m.modules())) if (!all.contains(address(server.ip) + " " + module)) return true;
+        return false;
+    }
+
+    /** Of the mod modules a server's resources list, the ones this client has: what its scripts will be able to call. */
+    static List<String> installedModules(List<String> announced) {
+        var installed = host.modules().modVersions();
+        return announced.stream().filter(installed::containsKey).toList();
+    }
+
+    /** "bank: Read your balance" (the module's own words), or just its name. */
+    static Component moduleNote(String module) {
+        String text = host.modules().description(module);
+        return text == null ? Component.literal(module) : Component.literal(module + ": ").append(Component.translatableWithFallback(text, text));
     }
 
     /** The server being joined or played on (null in singleplayer). */
@@ -366,19 +386,20 @@ public final class TroupeClient implements ClientModInitializer {
         return trustedSet().contains(address(ip));
     }
 
-    /** The player said Join: the server being joined won't ask again. */
-    static void trustCurrent() {
+    /** The player said Join: the server being joined won't ask again while it reaches no other mod ("address module" lines). */
+    static void trustCurrent(List<String> modules) {
         var server = server();
-        if (server == null || trusted(server.ip)) return;
+        if (server == null) return;
         var all = trustedSet();
         all.add(address(server.ip));
+        for (String module : modules) all.add(address(server.ip) + " " + module);
         saveTrusted(all);
     }
 
     /** Asks again next time on the server at {@code ip}. */
     static void forget(String ip) {
         var all = trustedSet();
-        if (all.remove(address(ip))) saveTrusted(all);
+        if (all.removeIf(line -> line.equals(address(ip)) || line.startsWith(address(ip) + " "))) saveTrusted(all);
     }
 
     private static java.util.Set<String> trustedSet() {
@@ -416,11 +437,18 @@ public final class TroupeClient implements ClientModInitializer {
         });
     }
 
+    /** -Dtroupe.dev=true: keep the client side's editor definitions (troupe/stubs, next to the cache) up to date. */
+    private static void devStubs() {
+        if (Boolean.getBoolean("troupe.dev")) Troupe.writeStubs(CACHE.getParent(), host);
+    }
+
     /** Starts the server's resources from the cache: only their client/ and shared/ files are reachable. */
     private static void startResources() {
         started = true;
         Manifest m = manifest;
+        host.setAllowedModules(m.modules());
         host.apply(ResourceHost.entries(m, new BlobCache(CACHE, m.key())), m.generations());
+        devStubs();
         assets.apply(m);
     }
 
@@ -435,7 +463,10 @@ public final class TroupeClient implements ClientModInitializer {
             return;
         }
         Troupe.LOG.info("Server resources changed: {}", m.generations());
+        // ponytail: a restart that adds a mod module mid-session isn't asked about again; it is on the next join
+        host.setAllowedModules(m.modules());
         host.apply(ResourceHost.entries(m, new BlobCache(CACHE, m.key())), m.generations());
+        devStubs();
         whenLoaded(m, ready);
     }
 

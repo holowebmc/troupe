@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
  *   CALL      varint id, string resource, string name, text json
  *   REPLY     varint id, u8 ok, text json (the result, or the error message as a JSON string)
  * play phase, client → server only
- *   HELLO     varint count, strings: the client's mod modules (answering START; the server's players.on_join waits for it)
+ *   HELLO     varint count, (string name, string version)s: the client's mod modules (answering START; the server's players.on_join waits for it)
  * play phase, server → client only
  *   STATE     string resource, u8 global, string key, text json ("" removes the key)
  *   CLEAR     string resource (it stopped on the server: drop its state)
@@ -95,20 +95,22 @@ public final class Protocol {
      * {@code generations}: bumps every time the resource starts on the server; a client restarts its side when it changes.
      * {@code key}: the server's cache key (64 hex chars), "" until the server sets it.
      * {@code download}: "" or the URL blobs can be fetched from ({@code download + sha256}).
+     * {@code modules}: the client's mod modules these resources may reach (their {@code mods.client}); the player
+     * sees them before joining, and nothing else of {@code mods.*} answers on the client.
      */
-    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations, String key, String download) {
+    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations, String key, String download, List<String> modules) {
         public static final Manifest EMPTY = new Manifest(List.of(), Map.of(), Map.of());
 
         public Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations) {
-            this(blobs, resources, generations, "", "");
+            this(blobs, resources, generations, "", "", List.of());
         }
 
         public Manifest withKey(String key) {
-            return new Manifest(blobs, resources, generations, key, download);
+            return new Manifest(blobs, resources, generations, key, download, modules);
         }
 
         public Manifest withDownload(String url) {
-            return new Manifest(blobs, resources, generations, key, url);
+            return new Manifest(blobs, resources, generations, key, url, modules);
         }
 
         public int generation(String resource) {
@@ -148,7 +150,9 @@ public final class Protocol {
             out.string(name).varint(m.generation(name)).varint(files.size());
             files.forEach((path, blob) -> out.string(path).varint(blob));
         });
-        return out.string(m.download()).toByteArray();
+        out.string(m.download()).varint(m.modules().size());
+        for (String module : m.modules()) out.string(module);
+        return out.toByteArray();
     }
 
     /** Decodes and validates a manifest from the server (untrusted on the client). In is past the type byte. */
@@ -186,8 +190,15 @@ public final class Protocol {
         }
         String download = in.string();
         if (!validDownload(download)) throw new ProtocolException("bad download URL");
+        int moduleCount = in.count(MAX_MODULES);
+        List<String> modules = new ArrayList<>(moduleCount);
+        for (int i = 0; i < moduleCount; i++) {
+            String module = in.string();
+            if (!validName(module)) throw new ProtocolException("bad module name: " + module);
+            modules.add(module);
+        }
         if (version <= VERSION) in.end(); // a newer server may have appended fields this build doesn't know
-        return new Manifest(blobs, resources, generations, key, download);
+        return new Manifest(blobs, resources, generations, key, download, List.copyOf(modules));
     }
 
     /** Message writer: type byte first, then fields. */

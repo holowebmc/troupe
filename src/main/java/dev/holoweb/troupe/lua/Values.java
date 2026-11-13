@@ -5,6 +5,7 @@ import org.squiddev.cobalt.Constants;
 import org.squiddev.cobalt.LuaError;
 import org.squiddev.cobalt.LuaString;
 import org.squiddev.cobalt.LuaTable;
+import org.squiddev.cobalt.LuaUserdata;
 import org.squiddev.cobalt.LuaValue;
 import org.squiddev.cobalt.ValueFactory;
 import org.squiddev.cobalt.Varargs;
@@ -77,6 +78,10 @@ final class Values {
                     map.put(str(e.first()), toJava(runtime, e.arg(2), depth + 1));
                 return map;
             }
+            case Constants.TUSERDATA: // an object of a registered type goes back as itself, a java.* object too
+                if (v instanceof LuaUserdata u && u.instance instanceof JavaApi.Handle h && !h.isClass()) return h.object();
+                if (v instanceof LuaUserdata u && runtime.host.modules().typeOf(u.instance.getClass()) != null) return u.instance;
+                throw new LuaError(v.typeName() + " values can't be passed to Java");
             default:
                 throw new LuaError(v.typeName() + " values can't be passed to Java");
         }
@@ -120,6 +125,11 @@ final class Values {
         }
         if (o instanceof Object[] array) return toLua(runtime, Arrays.asList(array), depth);
         if (o instanceof Callback) throw new LuaError("a function from another resource can't be passed here");
+        ModuleRegistry registry = runtime.host.modules();
+        java.util.function.Function<Object, Object> converter = registry.converter(o.getClass());
+        if (converter != null) return toLua(runtime, converter.apply(o), depth + 1);
+        ModuleRegistry.TypeImpl<?> type = registry.typeOf(o.getClass());
+        if (type != null) return runtime.object(o, type);
         throw new LuaError(o.getClass().getSimpleName() + " values can't be passed to Lua");
     }
 }

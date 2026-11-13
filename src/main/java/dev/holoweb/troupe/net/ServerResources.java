@@ -94,7 +94,17 @@ public record ServerResources(Manifest manifest, List<Path> files, Map<String, R
             }
             resources.put(name, resourceFiles);
         }
-        return new ServerResources(new Manifest(blobs, resources, Map.of()), files, infos, root);
+        return new ServerResources(new Manifest(blobs, resources, Map.of(), "", "", modules(infos, resources.keySet())), files, infos, root);
+    }
+
+    /** The client mod modules those resources list, sorted. */
+    private static List<String> modules(Map<String, ResourceInfo> infos, java.util.Collection<String> names) {
+        java.util.TreeSet<String> out = new java.util.TreeSet<>();
+        for (String name : names) {
+            ResourceInfo info = infos.get(name);
+            if (info != null) for (ResourceInfo.Need need : info.clientMods()) out.add(need.name());
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -118,7 +128,7 @@ public record ServerResources(Manifest manifest, List<Path> files, Map<String, R
             resources.put(name, mapped);
             generations.put(name, running.get(name));
         });
-        return new ServerResources(new Manifest(blobs, resources, generations, manifest.key(), manifest.download()), files, infos, root);
+        return new ServerResources(new Manifest(blobs, resources, generations, manifest.key(), manifest.download(), modules(infos, resources.keySet())), files, infos, root);
     }
 
     /** The server's cache key goes out with the manifest ({@link BlobCache}). */

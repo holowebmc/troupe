@@ -651,7 +651,7 @@ final class GameApi {
         return (int) slot;
     }
 
-    private Entity find(String id) {
+    Entity find(String id) {
         UUID uuid;
         try {
             uuid = UUID.fromString(id);

@@ -34,5 +34,7 @@
   "troupe.world.allow": "Allow",
   "key.category.troupe.troupe": "Troupe",
   "key.troupe.interact": "Interact",
+  "troupe.trust.mods": "They also use your mods: %s",
+  "troupe.trust.mods.title": "Through mods you have installed:",
   "troupe.fault": "Troupe stopped this server's script '%s': it used too much time or memory."
 }

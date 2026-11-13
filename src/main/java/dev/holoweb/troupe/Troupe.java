@@ -199,6 +199,11 @@ public final class Troupe implements ModInitializer {
         return pendingWorld;
     }
 
+    /** The client mod modules the waiting world's resources list. */
+    static java.util.List<String> pendingModules() {
+        return resources.manifest().modules();
+    }
+
     static int pendingResources() {
         return resources.infos().size();
     }
@@ -234,8 +239,54 @@ public final class Troupe implements ModInitializer {
         return java.util.List.of();
     }
 
+    /**
+     * {@code dir/stubs/}: everything an editor (LuaLS) needs to know this installation. Troupe's own API (the files
+     * in the jar's {@code /troupe/defs}), what the mods of this side added ({@code mods-<side>.lua}) and what the
+     * running resources offer each other ({@code resources-<side>.lua}). Returns the folder, or null on failure.
+     */
+    static java.nio.file.Path writeStubs(java.nio.file.Path dir, ResourceHost host) {
+        java.nio.file.Path stubs = dir.resolve("stubs");
+        String side = host.side().folder();
+        try {
+            java.nio.file.Files.createDirectories(stubs);
+            for (String def : new String[]{"shared", "server", "client"}) {
+                try (var in = Troupe.class.getResourceAsStream("/troupe/defs/" + def + ".lua")) {
+                    if (in != null) java.nio.file.Files.write(stubs.resolve(def + ".lua"), in.readAllBytes());
+                }
+            }
+            java.nio.file.Files.writeString(stubs.resolve("mods-" + side + ".lua"), host.modules().stubs());
+            java.nio.file.Files.writeString(stubs.resolve("resources-" + side + ".lua"), host.resourceStubs());
+            return stubs;
+        } catch (java.io.IOException e) {
+            LOG.warn("Couldn't write the Lua definitions to {}", stubs, e);
+            return null;
+        }
+    }
+
     /** Calls the {@code troupe} entrypoint and the side-specific one with this side's module registry. */
     static void registerModules(Modules modules) {
+        // Game types mods hand over as they are (ServerApi adds players, entities and items on the server).
+        if (modules instanceof dev.holoweb.troupe.lua.ModuleRegistry names) {
+            names.luaName(net.minecraft.world.phys.Vec3.class, "Pos");
+            names.luaName(net.minecraft.core.BlockPos.class, "Pos");
+            names.luaName(net.minecraft.network.chat.Component.class, "string");
+            names.luaName(net.minecraft.resources.Identifier.class, "string");
+            names.luaName(net.minecraft.world.entity.Entity.class, "Entity");
+            names.luaName(net.minecraft.world.entity.player.Player.class, "Player");
+            names.luaName(net.minecraft.world.item.ItemStack.class, "table");
+        }
+        modules.convert(net.minecraft.world.phys.Vec3.class, v -> java.util.Map.of("x", v.x, "y", v.y, "z", v.z), o -> {
+            double[] p = dev.holoweb.troupe.lua.Zones.point(o);
+            return new net.minecraft.world.phys.Vec3(p[0], p[1], p[2]);
+        });
+        modules.convert(net.minecraft.core.BlockPos.class, v -> java.util.Map.of("x", v.getX(), "y", v.getY(), "z", v.getZ()), o -> {
+            double[] p = dev.holoweb.troupe.lua.Zones.point(o);
+            return net.minecraft.core.BlockPos.containing(p[0], p[1], p[2]);
+        });
+        modules.convert(net.minecraft.network.chat.Component.class, net.minecraft.network.chat.Component::getString,
+                o -> o instanceof String s ? net.minecraft.network.chat.Component.literal(s) : null);
+        modules.convert(net.minecraft.resources.Identifier.class, Object::toString,
+                o -> o instanceof String s ? net.minecraft.resources.Identifier.tryParse(s) : null);
         String sideEntrypoint = modules.side() == Side.CLIENT ? "troupe-client" : "troupe-server";
         for (String entrypoint : new String[]{"troupe", sideEntrypoint}) {
             for (var container : FabricLoader.getInstance().getEntrypointContainers(entrypoint, TroupeModule.class)) {
@@ -432,6 +483,20 @@ public final class Troupe implements ModInitializer {
                 .then(action("start", host::start))
                 .then(action("stop", name -> {
                     if (host.stop(name).isEmpty()) throw new ResourceException(name + " isn't running");
+                }))
+                .then(Commands.literal("stubs").executes(c -> {
+                    java.nio.file.Path root = Compat.serverDir(c.getSource().getServer());
+                    java.nio.file.Path file = writeStubs(root.resolve("troupe"), host);
+                    // Editors that open resources/ find the definitions through this (never overwritten).
+                    java.nio.file.Path luarc = root.resolve("resources/.luarc.json");
+                    try {
+                        if (file != null && java.nio.file.Files.isDirectory(luarc.getParent()) && !java.nio.file.Files.exists(luarc))
+                            java.nio.file.Files.writeString(luarc, "{\n  \"runtime.version\": \"Lua 5.2\",\n  \"workspace.library\": [\"../troupe/stubs\"]\n}\n");
+                    } catch (java.io.IOException e) {
+                        LOG.warn("Couldn't write {}", luarc, e);
+                    }
+                    c.getSource().sendSystemMessage(Component.literal(file == null ? "Couldn't write the definitions (see the log)" : "Lua definitions written to " + file));
+                    return file == null ? 0 : 1;
                 }))
                 .then(action("restart", host::restart))
                 .then(action("ensure", name -> {

@@ -39,7 +39,7 @@ final class JavaApi {
             "java.lang.foreign.", "java.lang.module.", "java.io.", "java.nio.file.", "java.nio.channels.", "java.net.",
             "sun.", "jdk.", "com.sun.", "net.fabricmc.loader.", "org.spongepowered.");
 
-    private record Handle(Object object, boolean isClass) {}
+    record Handle(Object object, boolean isClass) {}
 
     private final LuaRuntime rt;
     private final List<String> allow;
@@ -166,6 +166,7 @@ final class JavaApi {
         if (v.isNil()) return t.isPrimitive() ? MISMATCH : null;
         if (v instanceof LuaUserdata u && u.instance instanceof Handle h)
             return h.isClass() ? MISMATCH : box(t).isInstance(h.object()) ? h.object() : MISMATCH;
+        if (v instanceof LuaUserdata u) return box(t).isInstance(u.instance) ? u.instance : MISMATCH; // an object of a mod's type
         switch (v.type()) {
             case Constants.TBOOLEAN:
                 return t == boolean.class || t == Boolean.class || t == Object.class ? (Object) v.toBoolean() : MISMATCH;

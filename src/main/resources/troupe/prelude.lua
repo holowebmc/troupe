@@ -31,6 +31,54 @@ function require(name)
   return result
 end
 
+-- Functions a mod registered as async (Module.async) wait for their answer like timer.wait does.
+do
+  local raw_call, raw_get, done = mods.call, mods.get, {}
+  function mods.get(mod)
+    local t = raw_get(mod)
+    if not done[t] then
+      done[t] = true
+      for _, fn in ipairs(host.async(mod)) do
+        t[fn] = function(...) return await("module", mod, fn, ...) end
+      end
+    end
+    return t
+  end
+  function mods.call(mod, fn, ...)
+    local f = rawget(mods.get(mod), fn)
+    if f then return f(...) end
+    return raw_call(mod, fn, ...)   -- raises "no function"
+  end
+end
+
+-- Cobalt is Lua 5.2: what libraries written for 5.3 look for in math. Numbers are doubles, so "integer" means whole.
+function math.type(x)
+  if type(x) ~= "number" then return nil end
+  return (x % 1 == 0 and x == x and x ~= math.huge and x ~= -math.huge) and "integer" or "float"
+end
+function math.tointeger(x)
+  if type(x) == "string" then x = tonumber(x) end
+  return math.type(x) == "integer" and x or nil
+end
+math.maxinteger, math.mininteger = 2 ^ 53, -(2 ^ 53)
+function math.ult(a, b) return (a % 2 ^ 32) < (b % 2 ^ 32) end
+function warn(...) print("warning:", ...) end
+
+-- typed('(amount: integer, note?: string) -> integer', fn): fn with its arguments checked on every call, and its
+-- signature in the editor definitions (/troupe stubs). For exports and anything else other code calls.
+function typed(sig, fn)
+  if type(sig) ~= "string" then error("bad argument #1 to 'typed' (string expected, got " .. type(sig) .. ")", 2) end
+  if type(fn) ~= "function" then error("bad argument #2 to 'typed' (function expected, got " .. type(fn) .. ")", 2) end
+  local check = host.check
+  local function checked(...)
+    local problem = check(checked, ...)
+    if problem then error(problem, 2) end
+    return fn(...)
+  end
+  host.typed(sig, checked)
+  return checked
+end
+
 -- async(fn, ...) runs fn as a task of its own, after the current one yields or ends.
 async = host.spawn
 
@@ -74,7 +122,7 @@ local function pid(p) if type(p) == "table" then return p.id end return p end
 local P = host.player_methods
 if players then
   -- player:fn(...) is players.fn(player.id, ...)
-  for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods", "has_permission",
+  for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods", "mod_version", "has_permission",
                         "health", "max_health", "set_health", "food", "set_food", "gamemode", "set_gamemode",
                         "xp", "give_xp", "set_level", "effect", "effects", "clear_effects",
                         "title", "actionbar", "sound", "kick", "tab", "looking_at",

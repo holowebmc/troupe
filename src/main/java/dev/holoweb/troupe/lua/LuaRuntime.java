@@ -11,6 +11,7 @@ import org.squiddev.cobalt.LuaError;
 import org.squiddev.cobalt.LuaState;
 import org.squiddev.cobalt.LuaTable;
 import org.squiddev.cobalt.LuaThread;
+import org.squiddev.cobalt.LuaUserdata;
 import org.squiddev.cobalt.LuaValue;
 import org.squiddev.cobalt.ValueFactory;
 import org.squiddev.cobalt.Varargs;
@@ -118,6 +119,7 @@ public final class LuaRuntime {
     private record Sleep(long due, Task task, int wake, String error) {}
 
     final String name;
+    private final dev.holoweb.troupe.net.ResourceInfo info;
     final Side side;
     final ResourceHost host;
     private final Files files;
@@ -129,6 +131,132 @@ public final class LuaRuntime {
     final LuaTable entityMethods = new LuaTable();
     final NetApi net;
     private LuaTable entityMeta;
+
+    private final Map<ModuleRegistry.TypeImpl<?>, LuaTable> typeMetas = new HashMap<>();
+    /** Functions wrapped by {@code typed(sig, fn)}. ponytail: kept until the resource stops. */
+    private final Map<LuaValue, Sig> typed = new java.util.IdentityHashMap<>();
+
+    /**
+     * Editor definitions of what this resource offers the others: its exports ({@code resource('name').fn}) and its
+     * net handlers. Signatures come from {@code typed}; otherwise the parameter names are all there is.
+     */
+    void stubs(StringBuilder out, List<String> resources, Map<String, List<String>> netOverloads) {
+        net.stubs(netOverloads);
+        if (!(exports instanceof LuaTable t) || name.contains("-")) return;
+        String local = "res_" + name;
+        StringBuilder fields = new StringBuilder(), functions = new StringBuilder();
+        java.util.TreeMap<String, LuaValue> entries = new java.util.TreeMap<>();
+        try {
+            for (Varargs e = t.next(Constants.NIL); !e.first().isNil(); e = t.next(e.first()))
+                if (e.first().isString()) entries.put(Values.str(e.first()), e.arg(2));
+        } catch (LuaError e) {
+            return;
+        }
+        entries.forEach((key, v) -> {
+            if (!key.matches("[A-Za-z_][A-Za-z0-9_]*")) return;
+            if (!(v instanceof LuaFunction fn)) {
+                fields.append("---@field ").append(key).append(' ').append(v.typeName()).append('\n');
+                return;
+            }
+            Sig sig = typed.get(fn);
+            if (sig == null && fn instanceof org.squiddev.cobalt.function.LuaClosure c) {
+                org.squiddev.cobalt.Prototype p = c.getPrototype();
+                List<String> names = new ArrayList<>();
+                for (int i = 0; i < p.parameters; i++) {
+                    org.squiddev.cobalt.LuaString n = p.getLocalName(i + 1, 0);
+                    names.add(n == null ? "arg" + (i + 1) : n.toString());
+                }
+                sig = Sig.named(names, p.isVarArg);
+            }
+            Sig.declare(functions, local, '.', key, sig);
+        });
+        out.append("---@class resource.").append(name).append('\n').append(fields).append("local ").append(local).append(" = {}\n").append(functions).append('\n');
+        resources.add(name);
+    }
+
+    /** A Java object of a registered type ({@link dev.holoweb.troupe.api.Type}) as a Lua object. */
+    LuaValue object(Object o, ModuleRegistry.TypeImpl<?> type) {
+        return ValueFactory.userdataOf(o, typeMetas.computeIfAbsent(type, this::typeMeta));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private LuaTable typeMeta(ModuleRegistry.TypeImpl type) {
+        ModuleRegistry.TypeImpl<Object> t = type;
+        LuaTable meta = new LuaTable();
+        meta.rawset("__index", LibFunction.create((s, self, key) -> {
+            if (!key.isString()) return Constants.NIL;
+            String k = Values.str(key);
+            Object o = self(t, self, k);
+            var getter = t.getters.get(k);
+            if (getter != null) return Values.toLua(this, guarded(t.name + "." + k, () -> getter.apply(o)));
+            var method = t.methods.get(k);
+            if (method == null) return Constants.NIL;
+            // ponytail: a new function per lookup; cache per key if a script calls methods in a hot loop
+            return LibFunction.createV((st, a) -> {
+                Object target = self(t, a.arg(1), k);
+                List<Object> args = Values.toJava(this, a, 2);
+                return Values.toLua(this, guarded(t.name + ":" + k, () -> method.call(target, args(args))));
+            });
+        }));
+        meta.rawset("__newindex", LibFunction.create((s, self, key, value) -> {
+            String k = Values.str(key);
+            var setter = t.setters.get(k);
+            if (setter == null) throw new LuaError(t.name + " has no property '" + k + "' to set");
+            Object o = self(t, self, k), v = Values.toJava(this, value, 0);
+            guarded(t.name + "." + k, () -> {
+                setter.accept(o, v);
+                return null;
+            });
+            return Constants.NIL;
+        }));
+        meta.rawset("__tostring", LibFunction.create((s, self) -> Values.lua(String.valueOf(((LuaUserdata) self).instance))));
+        meta.rawset("__eq", LibFunction.create((s, a, b) -> ValueFactory.valueOf(
+                a instanceof LuaUserdata x && b instanceof LuaUserdata y && x.instance.equals(y.instance))));
+        meta.rawset("__metatable", Values.lua(t.name)); // scripts can't read or swap it
+        return meta;
+    }
+
+    private static Object self(ModuleRegistry.TypeImpl<?> t, LuaValue v, String member) throws LuaError {
+        if (v instanceof LuaUserdata u && t.type.isInstance(u.instance)) return u.instance;
+        throw new LuaError("call it as obj:" + member + "(...), on a " + t.name);
+    }
+
+    private Args args(List<Object> values) {
+        return new Args(name, side, values, host.modules()::as);
+    }
+
+    /** Runs mod code for a script: whatever it throws becomes a Lua error that names {@code what}. */
+    private Object guarded(String what, java.util.concurrent.Callable<Object> call) throws LuaError {
+        long t0 = System.nanoTime();
+        try {
+            return call.call();
+        } catch (LuaError e) {
+            throw e;
+        } catch (IllegalArgumentException e) {
+            throw new LuaError(what + ": " + e.getMessage());
+        } catch (Exception e) {
+            LOG.warn("[{}] {} threw", name, what, e);
+            throw new LuaError(what + ": " + e);
+        } finally {
+            // Java can't be cut short like a script: its time counts against the resource (step), and it's named here.
+            if (System.nanoTime() - t0 > SLOW_CALL) logThrottled("[" + name + "] " + what + " held the game for more than " + SLOW_CALL / 1_000_000 + " ms");
+        }
+    }
+
+    private static final long SLOW_CALL = 50_000_000;
+
+    /** Wakes a task waiting on mod code with its results, or with the error. */
+    private void answer(Task task, int wake, String error, Object... results) {
+        if (error != null) {
+            wake(task, wake, error, Constants.NONE);
+            return;
+        }
+        try {
+            wake(task, wake, null, toLuaArgs(results));
+        } catch (LuaError e) {
+            wake(task, wake, Values.readable(e.getMessage()), Constants.NONE);
+        }
+    }
 
     /** Metatable of entity handles: the prelude's methods, and {@code entity.state} made on first use. */
     LuaTable entityMeta() {
@@ -165,7 +293,8 @@ public final class LuaRuntime {
     private final Map<String, List<LuaFunction>> listeners = new HashMap<>();
     private final Map<String, LuaTable> moduleTables = new HashMap<>();
 
-    LuaRuntime(String name, Side side, Files files, ResourceHost host) throws LuaError {
+    LuaRuntime(String name, Side side, Files files, ResourceHost host, dev.holoweb.troupe.net.ResourceInfo info) throws LuaError {
+        this.info = info;
         this.name = name;
         this.side = side;
         this.files = files;
@@ -184,7 +313,14 @@ public final class LuaRuntime {
                 }),
         });
         g.rawset("mods", RegisteredFunction.bind(new RegisteredFunction[]{
-                RegisteredFunction.of("has", (s, mod) -> ValueFactory.valueOf(host.modules().find(mod.checkString()) != null)),
+                RegisteredFunction.of("has", (s, mod) -> {
+                    ModuleRegistry.ModuleImpl m = host.modules().find(mod.checkString());
+                    return ValueFactory.valueOf(m != null && host.reaches(info, m));
+                }),
+                RegisteredFunction.of("version", (s, mod) -> {
+                    ModuleRegistry.ModuleImpl m = host.modules().find(mod.checkString());
+                    return m == null || m.version() == null || !host.reaches(info, m) ? Constants.NIL : Values.lua(m.version());
+                }),
                 RegisteredFunction.ofV("call", (s, a) -> callModule(a.arg(1).checkString(), a.arg(2).checkString(), a, 3)),
                 RegisteredFunction.of("get", (s, mod) -> moduleTable(mod.checkString())),
                 RegisteredFunction.of("on", (s, mod, event, fn) -> {
@@ -192,6 +328,7 @@ public final class LuaRuntime {
                     return Constants.NIL;
                 }),
         }));
+        g.rawset("bit32", Bit32.table()); // Cobalt is Lua 5.2 without it
         net = new NetApi(this, g);
         for (ModuleRegistry.ModuleImpl m : host.modules().globals()) {
             LuaTable table = (LuaTable) moduleTable(m.name());
@@ -214,6 +351,40 @@ public final class LuaRuntime {
                     return Constants.NONE;
                 }),
         });
+        // typed(sig, fn) in the prelude: remember the wrapper's signature, then check each call's arguments against it.
+        hostApi.rawset("typed", LibFunction.create((s, sig, fn) -> {
+            try {
+                typed.put(fn.checkFunction(), Sig.parse(sig.checkString()));
+            } catch (IllegalArgumentException e) {
+                throw new LuaError(e.getMessage());
+            }
+            return Constants.NIL;
+        }));
+        hostApi.rawset("check", LibFunction.createV((s, a) -> {
+            Sig sig = typed.get(a.arg(1));
+            Object[] values = new Object[Math.max(0, a.count() - 1)];
+            for (int i = 0; i < values.length; i++) {
+                try {
+                    values[i] = Values.toJava(this, a.arg(i + 2), 0);
+                } catch (LuaError e) {
+                    values[i] = a.arg(i + 2); // a coroutine, a foreign userdata: only "any" takes it
+                }
+            }
+            try {
+                sig.check(values.length, i -> values[i], host.modules());
+                return Constants.NIL;
+            } catch (IllegalArgumentException e) {
+                return Values.lua(e.getMessage());
+            }
+        }));
+        hostApi.rawset("async", LibFunction.create((s, mod) -> {
+            LuaTable names = new LuaTable();
+            int i = 1;
+            for (String fn : module(mod.checkString()).asyncNames()) names.rawset(i++, Values.lua(fn));
+            return names;
+        }));
+        handleMethods("player", playerMethods);
+        handleMethods("entity", entityMethods);
         hostApi.rawset("token", token);
         hostApi.rawset("player_methods", playerMethods);
         hostApi.rawset("entity_methods", entityMethods);
@@ -229,6 +400,17 @@ public final class LuaRuntime {
 
     public String name() {
         return name;
+    }
+
+    /** {@code handle:fn(...)} added by mods (Modules.method); the prelude runs after and its own methods win. */
+    private void handleMethods(String kind, LuaTable methods) {
+        host.modules().handleMethods.get(kind).forEach((fn, function) -> methods.rawset(fn, LibFunction.createV((s, a) -> {
+            if (!(a.arg(1) instanceof LuaTable self)) throw new LuaError("call it as " + kind + ":" + fn + "(...)");
+            List<Object> args = new ArrayList<>();
+            args.add(Values.str(self.rawget("id")));
+            args.addAll(Values.toJava(this, a, 2));
+            return Values.toLua(this, guarded(kind + ":" + fn, () -> function.call(args(args))));
+        })));
     }
 
     /**
@@ -367,22 +549,27 @@ public final class LuaRuntime {
                 // (error) or (nil, results...), from any thread.
                 case "module" -> {
                     String mod = Values.str(rest.arg(1)), fn = Values.str(rest.arg(2));
+                    var async = module(mod).async(fn);
+                    if (async != null) {
+                        List<Object> in = Values.toJava(this, rest, 3);
+                        var stage = (java.util.concurrent.CompletionStage<?>) guarded(mod + "." + fn, () -> async.call(args(in)));
+                        if (stage == null) answer(task, wake, null);
+                        else stage.whenComplete((value, failure) -> host.executor().execute(() -> {
+                            Throwable e = failure instanceof java.util.concurrent.CompletionException c && c.getCause() != null ? c.getCause() : failure;
+                            if (e == null) answer(task, wake, null, value);
+                            else answer(task, wake, mod + "." + fn + ": " + (e instanceof IllegalArgumentException ? e.getMessage() : e.toString()));
+                        }));
+                        break;
+                    }
                     ModuleFunction function = module(mod).function(fn);
                     if (function == null) throw new LuaError("module '" + mod + "' has no function '" + fn + "'");
                     List<Object> args = new ArrayList<>(Values.toJava(this, rest, 3));
                     args.add((Callback) r -> host.executor().execute(() -> {
-                        if (r.length > 0 && r[0] != null) {
-                            wake(task, wake, mod + "." + fn + ": " + r[0], Constants.NONE);
-                            return;
-                        }
-                        try {
-                            wake(task, wake, null, toLuaArgs(java.util.Arrays.copyOfRange(r, Math.min(1, r.length), r.length)));
-                        } catch (LuaError e) {
-                            wake(task, wake, Values.readable(e.getMessage()), Constants.NONE);
-                        }
+                        if (r.length > 0 && r[0] != null) answer(task, wake, mod + "." + fn + ": " + r[0]);
+                        else answer(task, wake, null, java.util.Arrays.copyOfRange(r, Math.min(1, r.length), r.length));
                     }));
                     try {
-                        function.call(new Args(name, side, args));
+                        function.call(args(args));
                     } catch (LuaError e) {
                         throw e;
                     } catch (Exception e) {
@@ -562,24 +749,15 @@ public final class LuaRuntime {
     private ModuleRegistry.ModuleImpl module(String mod) throws LuaError {
         ModuleRegistry.ModuleImpl m = host.modules().find(mod);
         if (m == null) throw new LuaError("no module '" + mod + "' on the " + side.name().toLowerCase());
+        if (!host.reaches(info, m)) throw new LuaError("list the module '" + mod + "' under mods." + side.folder() + " in resource.json to use it");
         return m;
     }
 
     private Varargs callModule(String mod, String fn, Varargs args, int from) throws LuaError {
         ModuleFunction function = module(mod).function(fn);
         if (function == null) throw new LuaError("module '" + mod + "' has no function '" + fn + "'");
-        Object result;
-        try {
-            result = function.call(new Args(name, side, Values.toJava(this, args, from)));
-        } catch (LuaError e) {
-            throw e;
-        } catch (IllegalArgumentException e) {
-            throw new LuaError(mod + "." + fn + ": " + e.getMessage());
-        } catch (Exception e) {
-            LOG.warn("[{}] {}.{} threw", name, mod, fn, e);
-            throw new LuaError(mod + "." + fn + ": " + e);
-        }
-        return Values.toLua(this, result);
+        List<Object> in = Values.toJava(this, args, from);
+        return Values.toLua(this, guarded(mod + "." + fn, () -> function.call(args(in))));
     }
 
     private LuaValue moduleTable(String mod) throws LuaError {
@@ -611,25 +789,42 @@ public final class LuaRuntime {
 
     /** {@code require} backend: returns the compiled chunk, or nil and a message. */
     private Varargs loadModule(LuaState s, Varargs args) throws LuaError {
-        String module = args.arg(1).checkString();
+        String full = args.arg(1).checkString();
+        // require('base:shared.util'): shared/util.lua of a resource this one depends on, run in this resource's state.
+        int colon = full.indexOf(':');
+        String library = colon < 0 ? null : full.substring(0, colon), module = full.substring(colon + 1);
         String folder = module.substring(0, Math.max(0, module.indexOf('.')));
-        if (!MODULE_NAME.matcher(module).matches() || !(folder.equals("shared") || folder.equals(side.folder())))
-            return ValueFactory.varargsOf(Constants.NIL, ValueFactory.valueOf("module '" + module + "' not found (modules are shared.x or " + side.folder() + ".x)"));
-        Varargs chunk = compile(module.replace('.', '/') + ".lua");
-        return chunk != null ? chunk : ValueFactory.varargsOf(Constants.NIL, ValueFactory.valueOf("module '" + module + "' not found"));
+        if (!MODULE_NAME.matcher(module).matches() || !(folder.equals("shared") || library == null && folder.equals(side.folder())))
+            return notFound(full, library == null ? " (modules are shared.x or " + side.folder() + ".x)" : " (another resource only lends its shared.x)");
+        Files from = files;
+        if (library != null) {
+            if (!info.dependencies().contains(library)) return notFound(full, ": list '" + library + "' under dependencies in resource.json");
+            from = host.filesOf(library);
+            if (from == null) return notFound(full, ": the resource '" + library + "' isn't here");
+        }
+        Varargs chunk = compile(library == null ? name : library, from, module.replace('.', '/') + ".lua");
+        return chunk != null ? chunk : notFound(full, "");
+    }
+
+    private static Varargs notFound(String module, String why) {
+        return ValueFactory.varargsOf(Constants.NIL, ValueFactory.valueOf("module '" + module + "' not found" + why));
     }
 
     /** Null when the file doesn't exist; (nil, message) when it doesn't compile. */
     private Varargs compile(String path) throws LuaError {
+        return compile(name, files, path);
+    }
+
+    private Varargs compile(String owner, Files from, String path) throws LuaError {
         byte[] source;
         try {
-            source = files.read(path);
+            source = from.read(path);
         } catch (IOException e) {
             throw new LuaError("can't read " + path + ": " + e.getMessage());
         }
         if (source == null) return null;
         try {
-            return LoadState.load(state, new ByteArrayInputStream(source), "@" + name + "/" + path, state.globals());
+            return LoadState.load(state, new ByteArrayInputStream(source), "@" + owner + "/" + path, state.globals());
         } catch (CompileException e) {
             return ValueFactory.varargsOf(Constants.NIL, ValueFactory.valueOf(e.getMessage()));
         }

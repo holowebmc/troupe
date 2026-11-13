@@ -31,6 +31,11 @@ public final class Links implements Network {
         return l == null ? List.of() : l.clientModules();
     }
 
+    public String clientModuleVersion(String playerId, String module) {
+        Link l = byPlayer.get(playerId);
+        return l == null ? null : l.clientModuleVersion(module);
+    }
+
     /** The player left: their pending calls fail and their state is dropped. */
     public void remove(String playerId) {
         Link link = byPlayer.remove(playerId);

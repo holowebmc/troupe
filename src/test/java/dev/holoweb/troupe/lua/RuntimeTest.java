@@ -218,4 +218,143 @@ class RuntimeTest {
         assertTrue(assertThrows(ResourceException.class, () -> host.start("a")).getMessage().contains("cycle"));
         assertFalse(host.isRunning("needs") || host.isRunning("a") || host.isRunning("b"));
     }
+
+    /** What a mod would register: a type, a converter, a function that answers later, a handle method. */
+    static final class Account {
+        final String owner;
+        long balance;
+
+        Account(String owner, long balance) {
+            this.owner = owner;
+            this.balance = balance;
+        }
+
+        @Override
+        public String toString() {
+            return "Account(" + owner + ")";
+        }
+    }
+
+    record Point(double x, double y) {}
+
+    enum Mode { FAST, SLOW }
+
+    @Test
+    void modsAddTypesConvertersAsyncFunctionsAndHandleMethods() throws Exception {
+        var modules = host.modules();
+        Account ana = new Account("ana", 10);
+        modules.type(Account.class, "account")
+                .property("owner", a -> a.owner)
+                .property("balance", a -> a.balance, (a, v) -> {
+                    if (!(v instanceof Long n) || n < 0) throw new IllegalArgumentException("balance must be a whole number >= 0");
+                    a.balance = n;
+                })
+                .method("deposit", (a, args) -> a.balance += args.integer(0));
+        modules.convert(Point.class, p -> Map.of("x", p.x(), "y", p.y()),
+                o -> o instanceof Map<?, ?> m && m.get("x") instanceof Number x && m.get("y") instanceof Number y ? new Point(x.doubleValue(), y.doubleValue()) : null);
+        modules.method("entity", "tag", a -> a.string(0) + "#" + a.string(1));
+        List<String> life = new ArrayList<>();
+        modules.onStart(r -> life.add("start " + r));
+        modules.onStop(r -> life.add("stop " + r));
+        var later = new java.util.concurrent.CompletableFuture<Object>();
+        var failing = new java.util.concurrent.CompletableFuture<Object>();
+        modules.module("bank")
+                .function("open", a -> ana)
+                .function("owner_of", a -> a.as(0, Account.class).owner)
+                .function("mirror", a -> {
+                    Point p = a.as(0, Point.class);
+                    return new Point(p.y(), p.x());
+                })
+                .function("mode", a -> a.as(0, Mode.class) == Mode.SLOW ? Mode.FAST : Mode.SLOW)
+                .function("id", a -> a.as(0, java.util.UUID.class))
+                .function("entity", a -> new EntityRef("e1", "minecraft:pig"))
+                .async("load", a -> later)
+                .async("fail", a -> failing);
+        run("""
+                local bank = mods.get('bank')
+                local acc = bank.open()
+                see(type(acc)); see(tostring(acc)); see(acc.owner); see(acc.balance)
+                see(acc:deposit(5)); acc.balance = 100; see(acc.balance)
+                see(select(2, pcall(function() acc.balance = -1 end)))
+                see(select(2, pcall(function() acc.owner = 'x' end)))
+                see(acc == bank.open()); see(bank.owner_of(acc))
+                see(select(2, pcall(bank.owner_of, 'ana')))
+                see(pcall(setmetatable, acc, {}))
+                local p = bank.mirror({ x = 1, y = 2 }); see(p.x); see(p.y)
+                see(bank.mode('slow'))
+                see(bank.id('00000000-0000-0000-0000-000000000001'))
+                see(bank.entity():tag('x'))
+                async(function() see(select(2, pcall(bank.fail))) end)
+                see(mods.call('bank', 'load', 1))
+                see('after')
+                """);
+        assertEquals(List.of("userdata", "Account(ana)", "ana", 10L, 15L, 100L), seen.subList(0, 6));
+        assertTrue(seen.get(6).toString().contains("balance must be"), seen.get(6).toString());
+        assertTrue(seen.get(7).toString().contains("no property 'owner' to set"), seen.get(7).toString());
+        assertEquals(List.of(true, "ana"), seen.subList(8, 10));
+        assertTrue(seen.get(10).toString().contains("Account expected, got string"), seen.get(10).toString());
+        assertEquals(List.of(false, 2L, 1L, "fast", "00000000-0000-0000-0000-000000000001", "e1#x"), seen.subList(11, 17));
+        assertEquals(17, seen.size(), "both tasks wait for their stage");
+        later.complete(ana);
+        failing.completeExceptionally(new IllegalArgumentException("no such account"));
+        assertEquals(ana, seen.get(17));
+        assertEquals("after", seen.get(18));
+        assertTrue(seen.get(19).toString().endsWith("bank.fail: no such account"), seen.get(19).toString());
+        host.stop("r");
+        assertEquals(List.of("start r", "stop r"), life);
+    }
+
+    @Test
+    void resourcesAskForModuleVersionsAndOnlyReachWhatTheyList() throws Exception {
+        host.modules().module("bank").version("1.2.0").function("ok", a -> true);
+        host.modules().module("map").function("ok", a -> true);
+
+        resource("old", "{ \"mods\": { \"client\": [\"bank >= 1.3\"] } }", "client/main.lua", "");
+        assertTrue(assertThrows(ResourceException.class, () -> host.start("old")).getMessage().contains("at version 1.3 or later (this is 1.2.0"));
+        resource("unversioned", "{ \"mods\": { \"client\": [\"map >= 1\"] } }", "client/main.lua", "");
+        assertTrue(assertThrows(ResourceException.class, () -> host.start("unversioned")).getMessage().contains("unversioned"));
+        resource("missing", "{ \"mods\": { \"client\": [\"radar\"] } }", "client/main.lua", "");
+        assertTrue(assertThrows(ResourceException.class, () -> host.start("missing")).getMessage().contains("a mod is missing"));
+        assertThrows(IOException.class, () -> ResourceInfo.parse("x", "{ \"mods\": { \"client\": [\"bank > 1\"] } }"));
+        assertTrue(ResourceInfo.atLeast("v1.10.0+26.3", "1.9") && !ResourceInfo.atLeast("1.2", "1.2.1") && !ResourceInfo.atLeast("dev", "1"));
+
+        // What a real client does: the server announced bank and probe; this resource lists bank, probe and an optional radar.
+        host.setAllowedModules(List.of("bank", "probe", "radar"));
+        resource("r", "{ \"mods\": { \"client\": [\"bank >= 1.2\", \"probe\", \"radar?\"] } }", "client/main.lua", """
+                local see = mods.get('probe').see
+                see(mods.version('bank')); see(mods.has('radar')); see(mods.call('bank', 'ok'))
+                see(mods.has('map')); see(select(2, pcall(mods.call, 'map', 'ok'))); see(json ~= nil)""");
+        host.start("r");
+        assertEquals(List.of("1.2.0", false, true, false), seen.subList(0, 4));
+        assertTrue(seen.get(4).toString().contains("list the module 'map' under mods.client"), seen.get(4).toString());
+        assertEquals(true, seen.get(5), "Troupe's own modules need no listing");
+
+        // Listed by the resource but never announced to the player: still out of reach.
+        host.stop("r");
+        seen.clear();
+        host.setAllowedModules(List.of("probe"));
+        assertTrue(assertThrows(ResourceException.class, () -> host.start("r")).getMessage().contains("list the module 'bank'"));
+        assertEquals(java.util.Arrays.asList(null, false), seen);
+    }
+
+    @Test
+    void timeSpentInModCodeCountsAgainstTheResource() throws Exception {
+        List<String> faults = faultsWith(new LuaRuntime.Limits(2000, 10_000, 100, 256L << 20, 1L << 30));
+        host.modules().module("slow").function("work", a -> {
+            Thread.sleep(150);
+            return null;
+        });
+        run("async(function() mods.call('slow', 'work') end)");
+        host.tick();
+        assertFalse(host.isRunning("r"));
+        assertTrue(faults.get(0).startsWith("r: ran for more than 100 ms"), faults.toString());
+    }
+
+    @Test
+    void manifestCarriesTheModules() throws Exception {
+        var m = new dev.holoweb.troupe.net.Protocol.Manifest(List.of(), Map.of(), Map.of(), "ab".repeat(32), "", List.of("bank", "map"));
+        var in = new dev.holoweb.troupe.net.Protocol.In(dev.holoweb.troupe.net.Protocol.encodeManifest(m));
+        in.type();
+        assertEquals(List.of("bank", "map"), dev.holoweb.troupe.net.Protocol.decodeManifest(in).modules());
+    }
 }

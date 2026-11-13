@@ -48,7 +48,31 @@ state.watch('balance', function(v) page:send('balance', v) end)
 
 `/troupe list|start|stop|restart|ensure <resource>` manage resources while the server runs. `config/troupe.json` holds the server's settings: the database (SQLite in `troupe/data.db` by default; any JDBC URL with its driver's jar in `mods/`), an optional HTTP download for the client files, and `java.*` access for server scripts.
 
-Other mods expose their own API to scripts by registering a module (`dev.holoweb.troupe.api`, entrypoint `troupe`); scripts call it with `mods.call`.
+The same with annotations: `modules.module("bank", new BankApi())` exposes every `@LuaFunction` method of the object, and `modules.type(Account.class, "account")` reads `@LuaFunction` and `@LuaProperty` from the class. `module.listener("join", SomeCallback.class)` gives an implementation of another mod's callback interface that fires a script event. Functions and events can declare their signature (`module.function("pay", "(to: Player, amount: integer) -> boolean", fn)`): calls that don't fit fail with the argument's name, and editors show it.
+
+Resources share Lua code too: `require('base:shared.util')` loads `shared/util.lua` of a resource listed under `dependencies` (`"base >= 1.2"` asks for a version, `"extras?"` is optional; a resource states its own with `"version"`). The language is Lua 5.2 with `utf8`, `string.pack`, `table.move`, `goto` and `bit32`; there are no 5.3 integer operators (`//`, `&`, `<<`).
+
+### Editor support
+
+`/troupe stubs` writes definitions for the [Lua Language Server](https://luals.github.io) into `troupe/stubs/` and points `resources/.luarc.json` at them: the whole Troupe API with parameters and return types, what the installed mods added, and what the running resources offer each other (`resource('bank').withdraw`, the arguments of each net event). In Lua, `typed('(amount: integer) -> boolean', fn)` checks a function's arguments on every call and types it for the other resources.
+
+A resource lists the mod modules it uses in `resource.json` (`"mods": { "client": ["bank >= 1.2", "map?"] }`): a minimum version, or `?` for one it can do without. On the client a script reaches only the modules its server announced, and the player sees which of their mods those are before joining.
+
+Other mods expose their own API to scripts by registering a module (`dev.holoweb.troupe.api`, entrypoint `troupe`); scripts call it with `mods.call` or `mods.get`. A mod can also give scripts its own object types (methods and properties), teach Troupe how its classes convert, add methods to player and entity handles, and register functions the script waits on:
+
+```java
+public class BankTroupe implements TroupeModule {
+    public void register(Modules modules) {
+        modules.type(Account.class, "account")
+                .property("balance", Account::balance)
+                .method("deposit", (account, args) -> account.deposit(args.integer(0)));
+        modules.module("bank")
+                .function("of", args -> Bank.of(args.as(0, ServerPlayer.class)))   // account:deposit(5) in Lua
+                .async("load", args -> Bank.loadAsync(args.string(0)));            // a CompletionStage
+        modules.method("player", "account", args -> Bank.of(args.as(0, ServerPlayer.class)));
+    }
+}
+```
 
 ## Building and verifying
 

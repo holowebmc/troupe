@@ -39,6 +39,23 @@ final class Schema {
         }
     }
 
+    /** The schema as a LuaLS type: <code>{ valor: number, nota?: string, itens: string[] }</code>. */
+    String luaType() {
+        return luaType(root);
+    }
+
+    private static String luaType(Object s) {
+        if (s instanceof String type) return type;
+        if (s instanceof List<?> list) return luaType(list.get(0)).replaceFirst("\\?$", "") + "[]";
+        StringBuilder out = new StringBuilder("{ ");
+        new java.util.TreeMap<Object, Object>((Map<?, ?>) s).forEach((k, v) -> {
+            String t = luaType(v);
+            boolean optional = t.endsWith("?");
+            out.append(out.length() > 2 ? ", " : "").append(k).append(optional ? "?: " : ": ").append(optional ? t.substring(0, t.length() - 1) : t);
+        });
+        return out.append(out.length() > 2 ? " }" : "}").toString();
+    }
+
     /** @throws IllegalArgumentException with the first mismatch, e.g. {@code valor: number expected, got string} */
     void validate(Object args) {
         // An empty Lua table converts to an empty map; nil args count as an empty object.

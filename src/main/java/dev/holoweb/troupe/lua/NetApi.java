@@ -80,6 +80,20 @@ final class NetApi {
         globals.rawset("state", state);
     }
 
+    /** Editor definitions: one {@code ---@overload} per handler, for the functions the other side calls it with. */
+    void stubs(Map<String, List<String>> overloads) {
+        new java.util.TreeMap<>(handlers).forEach((name, h) -> {
+            String args = h.schema() == null ? "any" : h.schema().luaType();
+            if (server) {
+                overloads.computeIfAbsent("emit", k -> new java.util.ArrayList<>()).add("fun(name: \"" + name + "\", args: " + args + ")");
+                overloads.computeIfAbsent("call", k -> new java.util.ArrayList<>()).add("fun(name: \"" + name + "\", args: " + args + ", opts?: { timeout: number }): any");
+            } else {
+                overloads.computeIfAbsent("emit", k -> new java.util.ArrayList<>()).add("fun(player: Player|string, name: \"" + name + "\", args: " + args + ")");
+                overloads.computeIfAbsent("broadcast", k -> new java.util.ArrayList<>()).add("fun(name: \"" + name + "\", args: " + args + ")");
+            }
+        });
+    }
+
     private void handle(Varargs a) throws LuaError {
         String name = a.arg(1).checkString();
         Schema schema = null;
@@ -209,10 +223,10 @@ final class NetApi {
             if (server) {
                 t.rawset("state", proxy(id, true));
                 t.rawset("public", entityState(id));
-                LuaTable meta = new LuaTable();
-                meta.rawset("__index", rt.playerMethods);
-                t.setMetatable(null, meta);
             }
+            LuaTable meta = new LuaTable(); // on the client only what mods added (Modules.method)
+            meta.rawset("__index", rt.playerMethods);
+            t.setMetatable(null, meta);
             return t;
         });
     }

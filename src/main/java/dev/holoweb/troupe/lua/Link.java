@@ -42,7 +42,7 @@ public final class Link implements Network {
     private ServerSync serverSync;
     private ServerResources nextPush;
     /** Server: the client's mod modules, once its HELLO came; what waits for it until then. */
-    private List<String> clientModules;
+    private Map<String, String> clientModules;
     private final List<Runnable> afterHello = new ArrayList<>();
     private Runnable afterPush;
     private ClientSync clientSync;
@@ -79,7 +79,13 @@ public final class Link implements Network {
 
     /** Server: the mod modules the client has ({@code mods.*} there); empty until its HELLO. */
     public List<String> clientModules() {
-        return clientModules == null ? List.of() : clientModules;
+        return clientModules == null ? List.of() : List.copyOf(clientModules.keySet());
+    }
+
+    /** Server: the version of one of the client's mod modules; null when it lacks the module or it has no version. */
+    public String clientModuleVersion(String module) {
+        String v = clientModules == null ? null : clientModules.get(module);
+        return v == null || v.isEmpty() ? null : v;
     }
 
     /** Server: runs {@code r} once the client said HELLO (now, if it already did). */
@@ -232,9 +238,9 @@ public final class Link implements Network {
                 if (fromClient) throw new ProtocolException("clients can't send START");
                 in.end();
                 Protocol.Out hello = new Protocol.Out(Protocol.HELLO);
-                List<String> mods = host.modules().modNames();
+                Map<String, String> mods = host.modules().modVersions();
                 hello.varint(mods.size());
-                for (String m : mods) hello.string(m);
+                mods.forEach((m, version) -> hello.string(m).string(version));
                 send(hello);
                 onStart.run();
             }
@@ -242,14 +248,14 @@ public final class Link implements Network {
                 if (!fromClient) throw new ProtocolException("servers don't send HELLO");
                 if (clientModules != null) throw new ProtocolException("HELLO sent twice");
                 int count = in.count(Protocol.MAX_MODULES);
-                List<String> mods = new ArrayList<>(count);
+                Map<String, String> mods = new java.util.TreeMap<>();
                 for (int i = 0; i < count; i++) {
-                    String m = in.string();
-                    if (!Protocol.validName(m)) throw new ProtocolException("bad module name in HELLO");
-                    mods.add(m);
+                    String m = in.string(), version = in.string();
+                    if (!Protocol.validName(m) || !version.matches("[0-9A-Za-z.+_-]{0,32}")) throw new ProtocolException("bad module in HELLO");
+                    mods.put(m, version);
                 }
                 in.end();
-                clientModules = List.copyOf(mods);
+                clientModules = mods;
                 List<Runnable> waiting = List.copyOf(afterHello);
                 afterHello.clear();
                 waiting.forEach(Runnable::run);
