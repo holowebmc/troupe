@@ -82,7 +82,7 @@ loom.runConfigs.configureEach {
 // always built by CI. -PmodrinthDry prints the upload and sends nothing.
 extensions.configure<ModrinthExtension> {
     token = providers.environmentVariable("MODRINTH_TOKEN")
-    projectId = "troupe"
+    projectId = "holoweb-troupe"
     versionNumber = project.version.toString()
     versionName = "Troupe ${property("mod.version")} for Minecraft ${property("mod.mc_versions").toString().replace(",", ", ")}"
     versionType = "alpha"
