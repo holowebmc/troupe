@@ -4,6 +4,7 @@
 	"version": "${version}",
 	"name": "Troupe",
 	"description": "Server resources (Lua + UI) that clients download and run on join.",
+	"icon": "assets/troupe/icon.png",
 	"license": "Apache-2.0",
 	"contact": {
 		"homepage": "https://github.com/holowebmc/troupe",
@@ -23,6 +24,6 @@
 		"fabric-api": "*"
 	},
 	"recommends": {
-		"vitrine": ">=0.2.0"
+		"vitrine": ">=0.2.1"
 	}
 }
