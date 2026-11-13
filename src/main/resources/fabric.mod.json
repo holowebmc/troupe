@@ -4,7 +4,12 @@
 	"version": "${version}",
 	"name": "Troupe",
 	"description": "Server resources (Lua + UI) that clients download and run on join.",
-	"license": "All-Rights-Reserved",
+	"license": "Apache-2.0",
+	"contact": {
+		"homepage": "https://github.com/holowebmc/troupe",
+		"sources": "https://github.com/holowebmc/troupe",
+		"issues": "https://github.com/holowebmc/troupe/issues"
+	},
 	"environment": "*",
 	"entrypoints": {
 		"main": ["dev.holoweb.troupe.Troupe"],

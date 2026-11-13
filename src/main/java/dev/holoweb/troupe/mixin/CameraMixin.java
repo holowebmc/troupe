@@ -28,7 +28,7 @@ public abstract class CameraMixin {
     //?} else
     /*@Inject(method = "setup", at = @At("TAIL"))*/
     private void troupe$override(CallbackInfo ci) {
-        double[] cam = RenderFx.camera;
+        double[] cam = RenderFx.camera();
         if (cam != null) {
             setPosition(cam[0], cam[1], cam[2]);
             setRotation((float) cam[3], (float) cam[4]);
@@ -40,7 +40,7 @@ public abstract class CameraMixin {
     /** With a fixed camera the player's own body shows, as in third person. */
     @Inject(method = "isDetached", at = @At("HEAD"), cancellable = true)
     private void troupe$detached(CallbackInfoReturnable<Boolean> cir) {
-        if (RenderFx.camera != null) cir.setReturnValue(true);
+        if (RenderFx.camera() != null) cir.setReturnValue(true);
     }
 
     //? if >=26.1 {

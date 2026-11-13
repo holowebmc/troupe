@@ -28,5 +28,11 @@
   "troupe.trust.announced": "%s resources · %s",
   "troupe.info.protocol": "Server protocol %s, this client %s",
   "troupe.info.badge.ok": "compatible",
-  "troupe.info.badge.bad": "not compatible"
+  "troupe.info.badge.bad": "not compatible",
+  "troupe.world.title": "This world runs scripts",
+  "troupe.world.question": "This world brings %s resources of its own. Their scripts run in your game and can change this world. Allow them?",
+  "troupe.world.allow": "Allow",
+  "key.category.troupe.troupe": "Troupe",
+  "key.troupe.interact": "Interact",
+  "troupe.fault": "Troupe stopped this server's script '%s': it used too much time or memory."
 }

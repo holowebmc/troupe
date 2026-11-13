@@ -75,6 +75,7 @@ final class GameApi {
         world(modules);
         blocks(modules);
         advancedEntities(modules);
+        customItems(modules);
     }
 
     /** Functions for both entities.* and players.* (the first argument is an entity id or a player id). */
@@ -88,6 +89,14 @@ final class GameApi {
     }
 
     private void advancedEntities(ModuleRegistry modules) {
+        // player:set_instance('apt_12') / entity:set_instance(nil): see Instances.
+        both(modules, "set_instance", (e, a) -> {
+            String name = a.get(1) == null ? null : a.string(1);
+            if (name != null && (name.isBlank() || name.length() > 64)) throw new IllegalArgumentException("instance names have 1..64 characters");
+            Instances.set(e, name, a.resource());
+            return null;
+        });
+        both(modules, "instance", (e, a) -> Instances.get(e, a.resource()));
         both(modules, "attribute", (e, a) -> {
             var i = Compat.attribute(living(e), attribute(a.string(1)));
             return i == null ? null : i.getValue();
@@ -304,14 +313,61 @@ final class GameApi {
         } else {
             throw new IllegalArgumentException("item expected (an id or { id = ... })");
         }
-        Item item = item(id);
+        Custom own = custom.get(id);
+        Item item = item(own != null ? String.valueOf(own.spec().get("base")) : id);
         if (count != null && !(count instanceof Number)) throw new IllegalArgumentException("count must be a number");
         long n = count == null ? 1 : ((Number) count).longValue();
         int max = anyCount ? 64 * 36 : new ItemStack(item).getMaxStackSize();
         if (n < 1 || n > max) throw new IllegalArgumentException("count must be 1.." + max);
         ItemStack s = new ItemStack(item, (int) n);
+        if (own != null) {
+            ItemCompat.apply(s, own.spec(), api.server());
+            ItemCompat.setCustomId(s, id);
+        }
         if (details != null) ItemCompat.apply(s, details, api.server());
         return s;
+    }
+
+    // ---- items a resource defines: a vanilla item dressed up (name, model...) and tagged with the resource's id
+
+    private record Custom(String resource, Map<String, Object> spec) {}
+
+    private static final java.util.regex.Pattern ITEM_ID = java.util.regex.Pattern.compile("[a-z0-9_.-]+:[a-z0-9_./-]+");
+    private final Map<String, Custom> custom = new java.util.HashMap<>();
+
+    /**
+     * {@code items.define('banco:cartao', { base = 'minecraft:paper', name, lore, model, item_model, glint, enchantments })}:
+     * from then on that id works wherever an item id does (give, take, count, set_item, containers), and items read
+     * back with it ({@code id = 'banco:cartao', base = 'minecraft:paper'}). Nothing is registered in the game: clients
+     * without the resource's assets see the base item.
+     */
+    private void customItems(ModuleRegistry modules) {
+        modules.global("items")
+                .function("define", a -> {
+                    String id = a.string(0);
+                    Map<String, Object> spec = a.table(1);
+                    if (!ITEM_ID.matcher(id).matches()) throw new IllegalArgumentException("item ids look like 'banco:cartao'");
+                    if (BuiltInRegistries.ITEM.containsKey(ServerApi.id(id))) throw new IllegalArgumentException("'" + id + "' is already an item of the game");
+                    Custom existing = custom.get(id);
+                    if (existing != null && !existing.resource().equals(a.resource())) throw new IllegalArgumentException("'" + id + "' belongs to " + existing.resource());
+                    if (!(spec.get("base") instanceof String base)) throw new IllegalArgumentException("base must be an item id, e.g. 'minecraft:paper'");
+                    ItemCompat.apply(new ItemStack(item(base)), spec, api.server()); // fail now on a bad definition
+                    custom.put(id, new Custom(a.resource(), spec));
+                    return null;
+                })
+                .function("defined", a -> custom.keySet().stream().sorted().toList());
+    }
+
+    void forget(String resource) {
+        Instances.forget(resource, api.serverOrNull());
+        custom.values().removeIf(c -> c.resource().equals(resource));
+    }
+
+    /** What {@code count} and {@code take} look for: a defined item by its tag, a game item only when it has none. */
+    private java.util.function.Predicate<ItemStack> matching(String id) {
+        if (custom.containsKey(id)) return s -> id.equals(ItemCompat.customId(s));
+        Item item = item(id);
+        return s -> s.is(item) && ItemCompat.customId(s) == null;
     }
 
     private void players(ModuleRegistry modules) {
@@ -423,20 +479,20 @@ final class GameApi {
                 })
                 .function("count", a -> {
                     Inventory inv = api.player(a).getInventory();
-                    Item item = item(a.string(1));
+                    var wanted = matching(a.string(1));
                     long n = 0;
-                    for (int i = 0; i < inv.getContainerSize(); i++) if (inv.getItem(i).is(item)) n += inv.getItem(i).getCount();
+                    for (int i = 0; i < inv.getContainerSize(); i++) if (wanted.test(inv.getItem(i))) n += inv.getItem(i).getCount();
                     return n;
                 })
                 .function("take", a -> {
                     Inventory inv = api.player(a).getInventory();
-                    Item item = item(a.string(1));
+                    var wanted = matching(a.string(1));
                     long want = a.get(2) == null ? 1 : a.integer(2);
                     if (want < 1) throw new IllegalArgumentException("count must be >= 1");
                     long taken = 0;
                     for (int i = 0; i < inv.getContainerSize() && taken < want; i++) {
                         ItemStack s = inv.getItem(i);
-                        if (!s.is(item)) continue;
+                        if (!wanted.test(s)) continue;
                         int n = (int) Math.min(s.getCount(), want - taken);
                         s.shrink(n);
                         if (s.isEmpty()) inv.setItem(i, ItemStack.EMPTY);
@@ -580,7 +636,9 @@ final class GameApi {
     static Map<String, Object> item(ItemStack s) {
         if (s.isEmpty()) return null;
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id", BuiltInRegistries.ITEM.getKey(s.getItem()).toString());
+        String own = ItemCompat.customId(s), id = BuiltInRegistries.ITEM.getKey(s.getItem()).toString();
+        m.put("id", own != null ? own : id);
+        if (own != null) m.put("base", id);
         m.put("count", s.getCount());
         m.put("name", s.getHoverName().getString());
         ItemCompat.describe(s, m);

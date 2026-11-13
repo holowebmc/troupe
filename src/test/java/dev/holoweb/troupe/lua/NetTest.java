@@ -79,6 +79,48 @@ class NetTest {
         clientHost.setAvailable(resources);
     }
 
+    @Test
+    void entityStateGoesToWhoSeesTheEntity() throws Exception {
+        java.util.Set<String> seenByP1 = new java.util.HashSet<>(java.util.Set.of("pig", "p1"));
+        serverHost.setEntityWatchers(entity -> seenByP1.contains(entity) ? List.of("p1") : List.of());
+        serverHost.modules().module("probe").function("entity", a -> new EntityRef(a.string(0), "minecraft:pig"));
+        resource("r", "{}",
+                "server/main.lua", """
+                        local pig, cow = mods.call('probe', 'entity', 'pig'), mods.call('probe', 'entity', 'cow')
+                        pig.state.dono = 'Ana'
+                        cow.state.dono = 'ninguem'
+                        """,
+                "client/main.lua", """
+                        state.watch_entity('dono', function(id, v) see(id .. '=' .. tostring(v)) end)
+                        state.watch_entity('cargo', function(id, v) see(id .. ' cargo ' .. tostring(v)) end)
+                        see(tostring(state.entity('pig').dono) .. ' ' .. tostring(state.entity('cow').dono))
+                        see(select(2, pcall(function() state.entity('pig').dono = 1 end)))
+                        """);
+        startBoth("r");
+        assertEquals("Ana nil", client.get(0), "sent on join for what is already in sight; the cow isn't");
+        assertTrue(client.get(1).toString().contains("read-only"), client.get(1).toString());
+
+        serverHost.setEntityState("r", "pig", "dono", "\"Bia\"");
+        serverHost.setEntityState("r", "cow", "dono", "\"Caio\""); // nobody sees the cow
+        pump();
+        assertEquals("pig=Bia", client.get(2));
+        assertEquals(3, client.size());
+
+        seenByP1.add("cow");
+        serverHost.showEntity("cow", "p1"); // it walked into sight
+        serverHost.hideEntity("pig", "p1"); // and the pig out of it
+        pump();
+        assertEquals(List.of("cow=Caio", "pig=nil"), client.subList(3, 5));
+        assertNull(clientHost.getEntityState("r", "pig", "dono"));
+
+        serverHost.setEntityState("r", "p1", "cargo", "\"admin\""); // player.public: the player sees their own
+        pump();
+        assertEquals("p1 cargo admin", client.get(5));
+        serverHost.stop("r");
+        pump();
+        assertNull(clientHost.getEntityState("r", "cow", "dono"), "the resource stopped: its state is gone");
+    }
+
     /** The order of a real join: the server runs, the player joins, the client starts its side on START. */
     private void startBoth(String name) throws ResourceException {
         serverHost.start(name);

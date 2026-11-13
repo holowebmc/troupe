@@ -17,9 +17,13 @@ class TroupeStatusTest {
     @Test
     void readsWhatServersSend() {
         TroupeStatus.Info i = parse("{\"protocol\":" + Protocol.VERSION + ",\"resources\":2,\"size\":2048,\"names\":[\"base\",\"exemplo\"]}");
-        assertEquals(new TroupeStatus.Info(Protocol.VERSION, 2, 2048, List.of("base", "exemplo")), i);
+        assertEquals(new TroupeStatus.Info(Protocol.VERSION, Protocol.VERSION, 2, 2048, List.of("base", "exemplo")), i);
         assertTrue(i.compatible());
         assertFalse(parse("{\"protocol\":1,\"resources\":1,\"size\":1}").compatible());
+        // a newer server that still speaks our version is fine; one that dropped it isn't
+        int next = Protocol.VERSION + 1;
+        assertTrue(parse("{\"protocol\":" + next + ",\"min\":" + Protocol.VERSION + ",\"resources\":1,\"size\":1}").compatible());
+        assertFalse(parse("{\"protocol\":" + next + ",\"min\":" + next + ",\"resources\":1,\"size\":1}").compatible());
     }
 
     @Test

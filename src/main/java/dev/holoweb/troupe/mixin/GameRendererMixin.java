@@ -15,7 +15,7 @@ public abstract class GameRendererMixin {
     /** No first-person hand while render.camera holds the view elsewhere. */
     @Inject(method = "renderItemInHand", at = @At("HEAD"), cancellable = true)
     private void troupe$hand(CallbackInfo ci) {
-        if (RenderFx.camera != null) ci.cancel();
+        if (RenderFx.camera() != null) ci.cancel();
     }
 
     //? if >=26.1 {

@@ -14,11 +14,11 @@ import java.util.List;
 /**
  * {@code resource.json} (comments allowed):
  * <pre>
- * { "dependencies": ["base"], "mods": { "client": ["create"], "server": ["create"] } }
+ * { "troupe": ">=0.2.0", "dependencies": ["base"], "mods": { "client": ["create"], "server": ["create"] } }
  * </pre>
- * Unknown fields are ignored.
+ * Unknown fields are ignored. {@code troupe}: the oldest Troupe the resource runs on (null: any).
  */
-public record ResourceInfo(String name, List<String> dependencies, List<String> clientMods, List<String> serverMods) {
+public record ResourceInfo(String name, List<String> dependencies, List<String> clientMods, List<String> serverMods, String minTroupe) {
     public static ResourceInfo parse(String name, String json) throws IOException {
         try {
             JsonElement root = JsonParser.parseString(json);
@@ -27,10 +27,23 @@ public record ResourceInfo(String name, List<String> dependencies, List<String> 
             List<String> deps = names(o.get("dependencies"), "dependencies");
             if (deps.contains(name)) throw new IOException("a resource can't depend on itself");
             JsonObject mods = o.has("mods") && o.get("mods").isJsonObject() ? o.getAsJsonObject("mods") : new JsonObject();
-            return new ResourceInfo(name, deps, names(mods.get("client"), "mods.client"), names(mods.get("server"), "mods.server"));
+            String min = o.has("troupe") && o.get("troupe").isJsonPrimitive() ? o.get("troupe").getAsString().replaceFirst("^>=\\s*", "") : null;
+            if (min != null && !min.matches("\\d+\\.\\d+\\.\\d+")) throw new IOException("troupe must look like \">=0.2.0\"");
+            return new ResourceInfo(name, deps, names(mods.get("client"), "mods.client"), names(mods.get("server"), "mods.server"), min);
         } catch (JsonParseException | IllegalStateException e) {
             throw new IOException("bad resource.json: " + e.getMessage());
         }
+    }
+
+    /** Whether Troupe {@code version} ("0.2.1", "0.2.1+26.3"; null: unknown, anything goes) is new enough. */
+    public boolean runsOn(String version) {
+        if (minTroupe == null || version == null) return true;
+        String[] need = minTroupe.split("\\."), have = version.split("\\D+");
+        for (int i = 0; i < 3; i++) {
+            int n = Integer.parseInt(need[i]), h = i < have.length && !have[i].isEmpty() ? Integer.parseInt(have[i]) : 0;
+            if (h != n) return h > n;
+        }
+        return true;
     }
 
     public List<String> mods(Side side) {

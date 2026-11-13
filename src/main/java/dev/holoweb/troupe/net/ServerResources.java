@@ -118,12 +118,17 @@ public record ServerResources(Manifest manifest, List<Path> files, Map<String, R
             resources.put(name, mapped);
             generations.put(name, running.get(name));
         });
-        return new ServerResources(new Manifest(blobs, resources, generations, manifest.key()), files, infos, root);
+        return new ServerResources(new Manifest(blobs, resources, generations, manifest.key(), manifest.download()), files, infos, root);
     }
 
     /** The server's cache key goes out with the manifest ({@link BlobCache}). */
     public ServerResources withKey(String key) {
         return new ServerResources(manifest.withKey(key), files, infos, root);
+    }
+
+    /** Where clients may fetch the files over HTTP ({@link BlobServer}, or anything serving the same paths). */
+    public ServerResources withDownload(String url) {
+        return new ServerResources(manifest.withDownload(url), files, infos, root);
     }
 
     /**

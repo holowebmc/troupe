@@ -17,6 +17,7 @@ public final class Links implements Network {
     public void add(Link link) {
         byPlayer.put(link.peer().id(), link);
         host.forEachGlobalState((resource, key, json) -> link.state(resource, null, key, json));
+        host.showEntities(link.peer().id()); // what they already see: tracking may have started before this link
         link.start();
     }
 
@@ -67,6 +68,12 @@ public final class Links implements Network {
         }
         Link l = byPlayer.get(player);
         if (l != null) l.state(resource, player, key, json);
+    }
+
+    @Override
+    public void entityState(String resource, String player, String entity, String key, String json) {
+        Link l = byPlayer.get(player);
+        if (l != null) l.entityState(resource, player, entity, key, json);
     }
 
     @Override

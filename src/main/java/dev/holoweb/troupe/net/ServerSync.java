@@ -42,7 +42,8 @@ public final class ServerSync {
             case Protocol.WANT -> {
                 if (wanted != null) throw new ProtocolException("WANT sent twice");
                 int version = in.varint();
-                if (version != Protocol.VERSION) throw new ProtocolException("client speaks protocol " + version + ", this server " + Protocol.VERSION);
+                // A newer client is fine: it read our MANIFEST and speaks our version from here on.
+                if (version < Protocol.MIN_VERSION) throw new ProtocolException("client speaks protocol " + version + ", this server needs " + Protocol.MIN_VERSION + " or later");
                 int blobs = resources.files().size();
                 byte[] bitmap = in.rest();
                 if (bitmap.length != (blobs + 7) / 8) throw new ProtocolException("bad WANT size");

@@ -95,6 +95,67 @@ class RuntimeTest {
         assertTrue((System.nanoTime() - t0) / 1e6 < LuaRuntime.TIME_LIMIT_MS + 1500);
     }
 
+    private List<String> faultsWith(LuaRuntime.Limits limits) {
+        List<String> faults = new ArrayList<>();
+        host.setLimits(limits);
+        host.onFault((name, why) -> faults.add(name + ": " + why));
+        return faults;
+    }
+
+    @Test
+    void resourceOverItsCpuBudgetIsStopped() throws Exception {
+        List<String> faults = faultsWith(new LuaRuntime.Limits(200, 10_000, 300, 256L << 20, 1L << 30));
+        run("for i = 1, 5 do async(function() while true do end end) end  see('main done')");
+        assertTrue(host.isRunning("r"), "each call is only cut; the resource stops on the host's tick");
+        host.tick();
+        assertFalse(host.isRunning("r"));
+        assertTrue(faults.get(0).startsWith("r: ran for more than 300 ms"), faults.toString());
+        host.startAll();
+        host.apply(resources, Map.of("r", 0));
+        assertFalse(host.isRunning("r"), "it stays stopped until someone starts it by name or the server restarts it");
+        host.apply(resources, Map.of("r", 2));
+        assertTrue(host.isRunning("r"), "a new generation on the server: it gets another chance");
+    }
+
+    @Test
+    void allocatingTooMuchStopsTheResource() {
+        List<String> faults = faultsWith(new LuaRuntime.Limits(2000, 10_000, 3000, 8L << 20, 1L << 30));
+        long t0 = System.nanoTime();
+        ResourceException growing = assertThrows(ResourceException.class,
+                () -> run("local t = {} for i = 1, 1e9 do t[i] = ('x'):rep(1000) .. i end"));
+        assertTrue(growing.getMessage().contains("memory"), growing.getMessage());
+        assertTrue((System.nanoTime() - t0) / 1e6 < 1500, "cut by allocation, long before the time limit");
+        // one big allocation, which may return before the watchdog looks: then the count at the end of the step catches it
+        ResourceException atOnce = assertThrows(ResourceException.class, () -> run("x = ('x'):rep(32 * 1024 * 1024)"));
+        assertTrue(atOnce.getMessage().contains("memory") || atOnce.getMessage().contains("8 MB in one call"), atOnce.getMessage());
+        assertFalse(host.isRunning("r"));
+        assertTrue(faults.isEmpty(), "main.lua failing is a start error, not a fault");
+    }
+
+    @Test
+    void windowAllocationBudgetAndHeapGuard() throws Exception {
+        List<String> faults = faultsWith(new LuaRuntime.Limits(2000, 10_000, 3000, 256L << 20, 16L << 20));
+        run("timer.after(0, function() for i = 1, 40 do local s = ('x'):rep(1024 * 1024) end end)");
+        host.tick();
+        host.tick();
+        assertTrue(faults.get(0).startsWith("r: allocated more than 16 MB in 10 s"), faults.toString());
+
+        faults.clear();
+        host.setLimits(LuaRuntime.Limits.DEFAULT);
+        double[] pressure = {0.5};
+        host.heapPressure = () -> pressure[0];
+        resource("small", "{}", "client/main.lua", "x = 1");
+        run("for i = 1, 100 do local s = ('x'):rep(1024 * 1024) end"); // 100 MB of garbage: under every limit
+        host.start("small");
+        for (int i = 0; i < 40; i++) host.tick();
+        assertTrue(host.isRunning("r"), "no pressure, nothing stops");
+        pressure[0] = 0.9;
+        for (int i = 0; i < 20; i++) host.tick();
+        assertFalse(host.isRunning("r"), "the heap is full: the biggest allocator goes");
+        assertTrue(host.isRunning("small"));
+        assertEquals(1, faults.size());
+    }
+
     @Test
     void modulesCallsTablesAndErrors() throws Exception {
         run("""

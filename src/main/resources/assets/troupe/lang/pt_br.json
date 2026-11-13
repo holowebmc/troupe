@@ -28,5 +28,11 @@
   "troupe.trust.announced": "%s resources · %s",
   "troupe.info.protocol": "Protocolo do servidor %s, deste cliente %s",
   "troupe.info.badge.ok": "compatível",
-  "troupe.info.badge.bad": "incompatível"
+  "troupe.info.badge.bad": "incompatível",
+  "troupe.world.title": "Este mundo executa scripts",
+  "troupe.world.question": "Este mundo traz %s resources próprias. Os scripts delas rodam no seu jogo e podem alterar este mundo. Permitir?",
+  "troupe.world.allow": "Permitir",
+  "key.category.troupe.troupe": "Troupe",
+  "key.troupe.interact": "Interagir",
+  "troupe.fault": "O Troupe parou o script '%s' deste servidor: ele usou tempo ou memória demais."
 }

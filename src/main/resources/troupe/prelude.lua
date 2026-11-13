@@ -74,12 +74,13 @@ local function pid(p) if type(p) == "table" then return p.id end return p end
 local P = host.player_methods
 if players then
   -- player:fn(...) is players.fn(player.id, ...)
-  for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods",
+  for _, fn in ipairs({ "message", "pos", "teleport", "give", "online", "mods", "has_permission",
                         "health", "max_health", "set_health", "food", "set_food", "gamemode", "set_gamemode",
                         "xp", "give_xp", "set_level", "effect", "effects", "clear_effects",
                         "title", "actionbar", "sound", "kick", "tab", "looking_at",
                         "items", "item", "set_item", "count", "take", "held",
-                        "attribute", "set_attribute", "set_velocity", "glow", "dismount", "vehicle", "passengers" }) do
+                        "attribute", "set_attribute", "set_velocity", "glow", "dismount", "vehicle", "passengers",
+                        "set_instance", "instance" }) do
     local f = players[fn]
     P[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end
@@ -96,12 +97,62 @@ local E = host.entity_methods
 if entities then
   for _, fn in ipairs({ "pos", "teleport", "remove", "alive", "name", "set_name", "health", "set_health",
                         "equip", "equipment", "attribute", "set_attribute", "effect", "clear_effects",
-                        "set_velocity", "glow", "dismount", "vehicle", "passengers", "move_to", "set_ai" }) do
+                        "set_velocity", "glow", "dismount", "vehicle", "passengers", "move_to", "set_ai",
+                        "set_instance", "instance" }) do
     local f = entities[fn]
     E[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end
   local mount = entities.mount
   function E:mount(vehicle) return relay(pcall(mount, self.id, pid(vehicle))) end
+end
+
+-- Server: zone.box(a, b, dim?) / zone.sphere(center, radius, dim?) return an object:
+-- z:on_enter(fn(player, z)), z:on_leave(fn(player, z)), z:players(), z:remove().
+if zone then
+  local Z, zones = {}, {}
+  Z.__index = Z
+  local create, remove, inside = zone.create, zone.remove, zone.players
+  local function new(spec)
+    local z = setmetatable({ id = relay(pcall(create, spec)), entering = {}, leaving = {} }, Z)
+    zones[z.id] = z
+    return z
+  end
+  function zone.box(a, b, dim) return new({ box = { a, b }, dim = dim }) end
+  function zone.sphere(center, radius, dim) return new({ sphere = center, radius = radius, dim = dim }) end
+  function Z:on_enter(fn) table.insert(self.entering, fn) return self end
+  function Z:on_leave(fn) table.insert(self.leaving, fn) return self end
+  function Z:players() return inside(self.id) end
+  function Z:remove() zones[self.id] = nil remove(self.id) end
+  zone.on_enter(function(id, p)
+    local z = zones[id]
+    if z then for _, fn in ipairs(z.entering) do async(fn, p, z) end end
+  end)
+  zone.on_leave(function(id, p)
+    local z = zones[id]
+    if z then for _, fn in ipairs(z.leaving) do async(fn, p, z) end end
+  end)
+  zone.create, zone.remove, zone.players, zone.on_enter, zone.on_leave = nil, nil, nil, nil, nil
+end
+
+-- Server: interact.add({ block = pos } | { entity = e } | { pos = pos, radius = r }, { label, distance, dim }, fn(player, target))
+-- shows the label to players looking at it from close enough; their Interact key runs fn. target:remove() ends it.
+if interact then
+  local T, targets = {}, {}
+  T.__index = T
+  local add, remove = interact.add, interact.remove
+  function interact.add(spec, opts, fn)
+    if type(fn) ~= "function" then error("bad argument #3 to 'add' (function expected, got " .. type(fn) .. ")", 2) end
+    if type(spec) == "table" and type(spec.entity) == "table" then spec = { entity = spec.entity.id } end
+    local t = setmetatable({ id = relay(pcall(add, spec, opts or {})), fn = fn }, T)
+    targets[t.id] = t
+    return t
+  end
+  function T:remove() targets[self.id] = nil remove(self.id) end
+  interact.on_use(function(id, p)
+    local t = targets[id]
+    if t then async(t.fn, p, t) end
+  end)
+  interact.remove, interact.on_use = nil, nil
 end
 
 -- Server: bossbar.create(...) returns an object: bar:set{...}, bar:show(p), bar:hide(p), bar:remove().
@@ -124,6 +175,19 @@ end
 
 -- Client: keys.bind('b', fn) runs fn when b is pressed with no screen open.
 if keys then
+  -- keys.register('abrir', { key = 'b', label = 'Abrir banco' }, fn): the same, but the player can change the key
+  -- in the game's Controls screen.
+  local register, actions = keys.register, {}
+  if register then
+    keys.on_action(function(id)
+      if actions[id] then actions[id]() end
+    end)
+    function keys.register(id, opts, fn)
+      if type(fn) ~= "function" then error("bad argument #3 to 'register' (function expected, got " .. type(fn) .. ")", 2) end
+      relay(pcall(register, id, opts or {}))
+      actions[id] = fn
+    end
+  end
   local bound = {}
   keys.on_press(function(key)
     for _, fn in ipairs(bound[key] or {}) do fn() end
@@ -133,6 +197,55 @@ if keys then
     relay(pcall(keys.watch, key))
     bound[key] = bound[key] or {}
     table.insert(bound[key], fn)
+  end
+end
+
+-- Server: http.request(url, { method, headers, body, timeout }) waits for { status, headers, body }.
+if http then
+  function http.request(url, opts) return await("module", "http", "request", url, opts or {}) end
+  http.get = http.request
+  function http.post(url, body, opts)
+    opts = opts or {}
+    return http.request(url, { method = "POST", body = body, headers = opts.headers, timeout = opts.timeout })
+  end
+end
+
+-- Server: db.query / db.execute / db.batch wait for the database.
+-- Parameters go as a list, db.query(sql, { 'a', db.null }), or one by one, db.query(sql, 'a', nil): written one by
+-- one, a nil is a NULL (Lua knows how many arguments there are, but not where a list with nils ends).
+if db then
+  local NULL = setmetatable({}, { __tostring = function() return "db.null" end })
+  db.null = NULL
+  -- Java gets a list with no holes: every NULL is an empty table (no real parameter is a table).
+  local function fill(n, get)
+    local out = {}
+    for i = 1, n do
+      local v = get(i)
+      if v == nil or v == NULL then v = {} end
+      out[i] = v
+    end
+    return out
+  end
+  local function list(t)
+    local n = 0
+    for k in pairs(t) do if type(k) == "number" and k > n then n = k end end   -- a nil in the middle doesn't cut it short
+    return fill(n, function(i) return t[i] end)
+  end
+  local function params(...)
+    local n, first = select("#", ...), ...
+    if n == 1 and type(first) == "table" and first ~= NULL then return list(first) end
+    local args = pack(...)
+    return fill(n, function(i) return args[i] end)
+  end
+  function db.query(sql, ...) return await("module", "db", "query", sql, params(...)) end
+  function db.execute(sql, ...) return await("module", "db", "execute", sql, params(...)) end
+  function db.batch(statements)
+    if type(statements) ~= "table" then error("bad argument #1 to 'batch' (table expected, got " .. type(statements) .. ")", 2) end
+    local out = {}
+    for i, st in ipairs(statements) do
+      if type(st) == "table" then out[i] = { st[1], list(type(st[2]) == "table" and st[2] or {}) } else out[i] = st end
+    end
+    return await("module", "db", "batch", out)
   end
 end
 

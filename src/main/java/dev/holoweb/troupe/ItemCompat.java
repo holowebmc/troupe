@@ -40,6 +40,8 @@ final class ItemCompat {
             s.setDamageValue((int) Math.max(0, Math.min(s.getMaxDamage(), d.longValue())));
         }
         if (spec.get("model") instanceof Number m) setModel(s, m.intValue());
+        if (spec.get("item_model") != null) setItemModel(s, ServerApi.id(String.valueOf(spec.get("item_model"))));
+        if (spec.get("glint") instanceof Boolean g) setGlint(s, g);
     }
 
     /** Adds what {@code s} has beyond id/count/name: lore, enchantments, damage, model. */
@@ -57,7 +59,35 @@ final class ItemCompat {
         if (model != null) out.put("model", model);
     }
 
+    private static final String CUSTOM_ID = "troupe:item";
+
+    //? if >=1.21.2 {
+    /** Any item model the client has loaded (a mod's, or one from a resource's assets); nothing before 1.21.2. */
+    private static void setItemModel(ItemStack s, net.minecraft.resources.Identifier model) {
+        s.set(net.minecraft.core.component.DataComponents.ITEM_MODEL, model);
+    }
+    //?} else {
+    /*private static void setItemModel(ItemStack s, net.minecraft.resources.Identifier model) {
+    }
+    *///?}
+
     //? if >=1.20.5 {
+    private static void setGlint(ItemStack s, boolean glint) {
+        s.set(net.minecraft.core.component.DataComponents.ENCHANTMENT_GLINT_OVERRIDE, glint);
+    }
+
+    /** Marks {@code s} as the item a resource defined ({@code items.define}). */
+    static void setCustomId(ItemStack s, String id) {
+        net.minecraft.world.item.component.CustomData.update(net.minecraft.core.component.DataComponents.CUSTOM_DATA, s, tag -> tag.putString(CUSTOM_ID, id));
+    }
+
+    static String customId(ItemStack s) {
+        var data = s.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
+        if (data == null) return null;
+        String id = data.copyTag().getStringOr(CUSTOM_ID, "");
+        return id.isEmpty() ? null : id;
+    }
+
     private static void setName(ItemStack s, Component name) {
         s.set(net.minecraft.core.component.DataComponents.CUSTOM_NAME, name);
     }
@@ -84,7 +114,19 @@ final class ItemCompat {
         return out;
     }
     //?} else {
-    /*private static void setName(ItemStack s, Component name) {
+    /*private static void setGlint(ItemStack s, boolean glint) {
+    }
+
+    static void setCustomId(ItemStack s, String id) {
+        s.getOrCreateTag().putString(CUSTOM_ID, id);
+    }
+
+    static String customId(ItemStack s) {
+        var tag = s.getTag();
+        return tag != null && tag.contains(CUSTOM_ID, 8) ? tag.getString(CUSTOM_ID) : null;
+    }
+
+    private static void setName(ItemStack s, Component name) {
         s.setHoverName(name);
     }
 

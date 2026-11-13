@@ -116,6 +116,65 @@ class SyncTest {
     }
 
     @Test
+    void downloadsOverHttpAndFallsBackToTheConnection() throws IOException {
+        Path root = tmp.resolve("resources");
+        byte[] big = new byte[300_000];
+        new Random(2).nextBytes(big);
+        write(root.resolve("a/resource.json"), "{}");
+        write(root.resolve("a/client/main.lua"), "print(1)");
+        write(root.resolve("a/server/main.lua"), "-- secret");
+        write(root.resolve("a/ui/big.bin"), big);
+        int[] chunks = new int[1];
+        UnaryOperator<byte[]> countChunks = msg -> {
+            if (msg[0] == Protocol.CHUNK) chunks[0]++;
+            return msg;
+        };
+        try (BlobServer http = new BlobServer(0)) {
+            ServerResources resources = ServerResources.scan(root, w -> {}).withKey(BlobCache.newKey())
+                    .withDownload("http://127.0.0.1:" + http.port() + "/");
+            http.serve(resources);
+            Result r = sync(resources, tmp.resolve("cache"), countChunks);
+            assertEquals(0, chunks[0], "everything came over HTTP");
+            assertEquals(3, r.client.downloadedFiles());
+            assertEquals(r.client.wantedBytes(), r.client.downloadedBytes());
+            assertArrayEquals(big, r.client.cache().read(r.manifest.blobs().get(r.manifest.resources().get("a").get("ui/big.bin"))));
+
+            // the server only knows the published blobs: no path reaches server code
+            var secret = java.net.URI.create("http://127.0.0.1:" + http.port() + "/../a/server/main.lua").toURL().openConnection();
+            assertEquals(404, ((java.net.HttpURLConnection) secret).getResponseCode());
+
+            http.serve(ServerResources.EMPTY); // now every request is a 404: the game connection takes over
+            Result fallback = sync(resources, tmp.resolve("cache2"), countChunks);
+            assertEquals(4, chunks[0], "three files, the big one in two chunks");
+            assertEquals(3, fallback.client.downloadedFiles());
+            assertEquals(fallback.client.wantedBytes(), fallback.client.downloadedBytes());
+        }
+    }
+
+    private static Protocol.In manifest(int version, int min, int trailing) throws ProtocolException {
+        Protocol.In in = new Protocol.In(new Protocol.Out(Protocol.MANIFEST).varint(version).varint(min)
+                .bytes(new byte[32]).varint(0).varint(0).string("").bytes(new byte[trailing]).toByteArray());
+        in.type();
+        return in;
+    }
+
+    @Test
+    void versionsOverlapOrSayWhoMustUpdate() throws IOException {
+        int v = Protocol.VERSION;
+        Protocol.decodeManifest(manifest(v, Protocol.MIN_VERSION, 0));
+        Protocol.decodeManifest(manifest(v + 1, v, 5)); // newer server that still speaks ours: its extra fields are skipped
+        assertThrows(ProtocolException.class, () -> Protocol.decodeManifest(manifest(v, Protocol.MIN_VERSION, 5)), "same version: trailing bytes are an error");
+        assertTrue(assertThrows(ProtocolException.class, () -> Protocol.decodeManifest(manifest(v + 2, v + 1, 0))).getMessage().contains("update the mod"));
+        assertTrue(assertThrows(ProtocolException.class, () -> Protocol.decodeManifest(manifest(Protocol.MIN_VERSION - 1, 1, 0))).getMessage().contains("too old"));
+
+        ResourceInfo r = ResourceInfo.parse("r", "{ \"troupe\": \">=0.2.1\" }");
+        assertTrue(r.runsOn("0.2.1") && r.runsOn("0.3.0+26.3") && r.runsOn("1.0.0") && r.runsOn(null));
+        assertFalse(r.runsOn("0.2.0") || r.runsOn("0.1.9+1.20.1"));
+        assertTrue(ResourceInfo.parse("r", "{}").runsOn("0.0.1"));
+        assertThrows(IOException.class, () -> ResourceInfo.parse("r", "{ \"troupe\": \"latest\" }"));
+    }
+
+    @Test
     void rejectsPathsOutsideClientFolders() {
         assertTrue(Protocol.validPath("ui/img/logo.png"));
         for (String bad : List.of("server/main.lua", "client/../server/x.lua", "/client/x", "client\\x", "client/C:x", "ui", "ui/"))
@@ -126,20 +185,22 @@ class SyncTest {
 
     /** Runs one connection to the end; {@code toClient} can tamper with what the server sends. */
     private static Result sync(ServerResources resources, Path cache, UnaryOperator<byte[]> toClient) {
-        Queue<Runnable> wire = new ArrayDeque<>();
+        java.util.concurrent.BlockingQueue<Runnable> wire = new java.util.concurrent.LinkedBlockingQueue<>(); // the HTTP thread adds too
         Manifest[] done = new Manifest[1];
         boolean[] serverDone = new boolean[1];
         ServerSync[] server = new ServerSync[1];
-        ClientSync client = new ClientSync(cache, msg -> wire.add(() -> serverDone[0] |= io(() -> server[0].receive(msg))));
+        ClientSync[] c = new ClientSync[1];
+        java.util.function.Consumer<byte[]> toTheClient = msg -> wire.add(() -> {
+            Manifest m = io(() -> c[0].receive(msg));
+            if (m != null) {
+                done[0] = m;
+                c[0].ready();
+            }
+        });
+        ClientSync client = c[0] = new ClientSync(cache, msg -> wire.add(() -> serverDone[0] |= io(() -> server[0].receive(msg))), toTheClient);
         server[0] = new ServerSync(resources, new ServerSync.Sender() {
             public void send(byte[] msg, Runnable onSent) {
-                wire.add(() -> {
-                    Manifest m = io(() -> client.receive(toClient.apply(msg)));
-                    if (m != null) {
-                        done[0] = m;
-                        client.ready();
-                    }
-                });
+                toTheClient.accept(toClient.apply(msg));
                 if (onSent != null) wire.add(onSent);
             }
 
@@ -148,9 +209,16 @@ class SyncTest {
             }
         });
         server[0].start();
-        while (!wire.isEmpty()) wire.poll().run();
-        assertTrue(serverDone[0], "server got READY");
-        assertNotNull(done[0], "client finished");
+        while (!serverDone[0] || done[0] == null) {
+            Runnable next;
+            try {
+                next = wire.poll(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                throw new AssertionError(e);
+            }
+            assertNotNull(next, "the download stalled");
+            next.run();
+        }
         return new Result(done[0], client);
     }
 

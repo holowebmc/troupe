@@ -25,6 +25,8 @@ import java.util.Map;
  *         net.call(player, name, args, {timeout = s})   player.state.k = v              state.global.k = v
  * client: net.handle(name, fn(args))                    net.emit(name, args)            net.call(name, args, {timeout = s})
  *         state.player.k   state.global.k (read-only)   state.watch(k, fn)              state.watch_global(k, fn)
+ * entities: server  entity.state.k = v   player.public.k = v     (goes to the players who see that entity or player)
+ *           client  state.entity(id).k (read-only)               state.watch_entity(k, fn(id, value))
  * </pre>
  * Handlers on the server must declare the format of their arguments ({@link Schema}); calls return the handler's
  * first result, or fail after {@code timeout} seconds (default {@value #DEFAULT_TIMEOUT}) without one.
@@ -72,6 +74,8 @@ final class NetApi {
             state.rawset("global", proxy(null, false));
             state.rawset("watch", LibFunction.create((s, key, fn) -> watch("p", key, fn)));
             state.rawset("watch_global", LibFunction.create((s, key, fn) -> watch("g", key, fn)));
+            state.rawset("watch_entity", LibFunction.create((s, key, fn) -> watch("e", key, fn)));
+            state.rawset("entity", LibFunction.create((s, id) -> entityState(id.checkString())));
         }
         globals.rawset("state", state);
     }
@@ -93,11 +97,13 @@ final class NetApi {
             }
             fn = a.arg(3).checkFunction();
         }
+        if (name.startsWith(ResourceHost.RESERVED)) throw new LuaError("names starting with 'troupe:' are Troupe's own");
         if (handlers.containsKey(name)) throw new LuaError("net.handle: '" + name + "' already has a handler");
         handlers.put(name, new Handler(fn, schema));
     }
 
     private void send(String player, String name, LuaValue args) throws LuaError {
+        if (name.startsWith(ResourceHost.RESERVED)) throw new LuaError("names starting with 'troupe:' are Troupe's own");
         rt.host.network().emit(rt.name, player, name, encode(args));
     }
 
@@ -202,6 +208,7 @@ final class NetApi {
             t.rawset("name", Values.lua(peer.name()));
             if (server) {
                 t.rawset("state", proxy(id, true));
+                t.rawset("public", entityState(id));
                 LuaTable meta = new LuaTable();
                 meta.rawset("__index", rt.playerMethods);
                 t.setMetatable(null, meta);
@@ -233,12 +240,47 @@ final class NetApi {
         }));
         meta.rawset("__newindex", LibFunction.create((s, self, key, value) -> {
             if (!writable) throw new LuaError("state is read-only on the client; the server writes it");
+            if (Values.str(key).startsWith(ResourceHost.RESERVED)) throw new LuaError("state keys starting with 'troupe:' are Troupe's own");
             rt.host.setState(rt.name, player, Values.str(key), value.isNil() ? null : encode(value));
             return Constants.NIL;
         }));
         LuaTable t = new LuaTable();
         t.setMetatable(null, meta);
         return t;
+    }
+
+    /** A table whose fields read (and on the server write) the state of one entity, as seen by this side. */
+    LuaTable entityState(String entity) {
+        LuaTable meta = new LuaTable();
+        meta.rawset("__index", LibFunction.create((s, self, key) -> {
+            String json = rt.host.getEntityState(rt.name, entity, Values.str(key));
+            try {
+                return json == null ? Constants.NIL : Values.toLua(rt, Json.decode(json));
+            } catch (IllegalArgumentException e) {
+                return Constants.NIL;
+            }
+        }));
+        meta.rawset("__newindex", LibFunction.create((s, self, key, value) -> {
+            if (!server) throw new LuaError("state is read-only on the client; the server writes it");
+            rt.host.setEntityState(rt.name, entity, Values.str(key), value.isNil() ? null : encode(value));
+            return Constants.NIL;
+        }));
+        LuaTable t = new LuaTable();
+        t.setMetatable(null, meta);
+        return t;
+    }
+
+    /** Client: the state of an entity in sight changed (json null: removed, or the entity left sight). */
+    void entityStateChanged(String entity, String key, String json) {
+        List<LuaFunction> fns = watchers.get("e:" + key);
+        if (fns == null) return;
+        LuaValue value;
+        try {
+            value = json == null ? Constants.NIL : Values.toLua(rt, Json.decode(json));
+        } catch (IllegalArgumentException | LuaError e) {
+            return;
+        }
+        for (LuaFunction fn : List.copyOf(fns)) rt.spawn(fn, ValueFactory.varargsOf(Values.lua(entity), value), "state.watch_entity " + key, null);
     }
 
     private LuaValue watch(String scope, LuaValue key, LuaValue fn) throws LuaError {

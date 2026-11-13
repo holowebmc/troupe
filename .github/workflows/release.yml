@@ -1,0 +1,72 @@
+name: release
+
+# Tests and builds every jar from this repository. Pushing a v<mod.version> tag also uploads those same jars to
+# Modrinth and to a GitHub release: the files players download are this workflow's output, never built on a
+# developer's machine. The run summary and the release's SHA512SUMS list their SHA-512.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write # the GitHub release
+  id-token: write # build provenance
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: gradle
+
+      # Troupe compiles against Vitrine (client UI). Its jars come from Vitrine's own release, built by its CI.
+      - name: Vitrine
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vitrine=$(sed -n 's/^deps.vitrine=//p' gradle.properties)
+          gh release download "v$vitrine" --repo holowebmc/vitrine --pattern "vitrine-$vitrine+*.jar" --dir libs
+
+      - name: Jars
+        run: ./gradlew build
+
+      - name: Hashes
+        run: |
+          mkdir dist
+          cp versions/*/build/libs/troupe-*.jar dist/
+          rm -f dist/*-sources.jar
+          cd dist
+          sha512sum *.jar > SHA512SUMS
+          { echo '### SHA-512'; echo '```'; cat SHA512SUMS; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: troupe
+          path: dist
+
+      - uses: actions/attest-build-provenance@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          subject-path: dist/*.jar
+
+      - name: Publish to Modrinth and GitHub
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^mod.version=//p' gradle.properties)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "tag $GITHUB_REF_NAME is not v$version (gradle.properties)"; exit 1; }
+          repo=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY
+          export MODRINTH_CHANGELOG="$(awk -v h="## $version" '$0 == h { on = 1; next } /^## / { on = 0 } on' CHANGELOG.md)
+
+          Built by GitHub Actions from commit [${GITHUB_SHA::7}]($repo/tree/$GITHUB_SHA) ([run]($repo/actions/runs/$GITHUB_RUN_ID)); SHA-512 sums in the [release]($repo/releases/tag/$GITHUB_REF_NAME)."
+          ./gradlew modrinth
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Troupe $version" --notes "$MODRINTH_CHANGELOG"

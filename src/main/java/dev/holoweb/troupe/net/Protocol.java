@@ -18,12 +18,14 @@ import java.util.regex.Pattern;
  *
  * <pre>
  * server → client
- *   MANIFEST  varint version, 32 bytes cache key (see {@link BlobCache}), varint blobs, blobs × (32 bytes sha256, varlong size),
- *             varint resources, resources × (string name, varint generation, varint files, files × (string path, varint blob))
+ *   MANIFEST  varint version, varint oldest version the server still speaks (these two never change place),
+ *             32 bytes cache key (see {@link BlobCache}), varint blobs, blobs × (32 bytes sha256, varlong size),
+ *             varint resources, resources × (string name, varint generation, varint files, files × (string path, varint blob)),
+ *             string download ("" or an http(s) URL ending in '/': the client may GET url + sha256 instead of asking for CHUNKs)
  *   CHUNK     varint blob, data up to the end of the message (blobs go in WANT order, each from offset 0)
  *   (the same four messages are reused in the play phase when the server's running resources change)
  * client → server
- *   WANT      varint version, bitmap of the blobs the client lacks (bit i = blob i, LSB first)
+ *   WANT      varint version (the client's newest; both sides then speak the lower of the two), bitmap of the blobs the client lacks (bit i = blob i, LSB first)
  *   READY     every wanted blob is in the client cache
  *
  * play phase, both directions (json: arguments or result, UTF-8 JSON text)
@@ -35,18 +37,34 @@ import java.util.regex.Pattern;
  * play phase, server → client only
  *   STATE     string resource, u8 global, string key, text json ("" removes the key)
  *   CLEAR     string resource (it stopped on the server: drop its state)
+ *   ENTITY    string resource, string entity, string key, text json: state of an entity the player can see
+ *             ("" json removes the key; "" key forgets the entity, which went out of sight)
  *   START     the global state has been sent: start the resources now
  * </pre>
  */
 public final class Protocol {
     public static final String CHANNEL = "troupe:v1";
-    public static final int VERSION = 3;
+    /**
+     * The newest protocol this build speaks, and the oldest it still accepts from the other side. Two builds can talk
+     * when each one's newest is at least the other's oldest; they then speak the lower of the two newest. A version
+     * that only adds (fields at the end of MANIFEST, new message types) keeps MIN_VERSION; one that changes what
+     * exists raises it.
+     */
+    public static final int VERSION = 4, MIN_VERSION = 4;
+
+    /** Can this build talk to one that speaks {@code version} and accepts down to {@code min}? */
+    public static boolean compatible(int version, int min) {
+        return version >= MIN_VERSION && min <= VERSION;
+    }
 
     public static final int MANIFEST = 0, CHUNK = 1; // server → client
     public static final int WANT = 0, READY = 1;     // client → server
     public static final int EVENT = 2, CALL = 3, REPLY = 4; // play phase, both ways
     public static final int STATE = 5, CLEAR = 6, START = 7; // play phase, server → client
     public static final int HELLO = 8; // play phase, client → server
+    /** Never on the wire: {@link ClientSync} tells itself, on its caller's thread, that the HTTP downloads ended. */
+    public static final int FETCHED = 9;
+    public static final int ENTITY = 10; // play phase, server → client
     /** Most mod modules a HELLO may list. */
     public static final int MAX_MODULES = 256;
 
@@ -76,21 +94,31 @@ public final class Protocol {
      * {@code resources}: resource name → (path inside the resource → index in {@code blobs}).
      * {@code generations}: bumps every time the resource starts on the server; a client restarts its side when it changes.
      * {@code key}: the server's cache key (64 hex chars), "" until the server sets it.
+     * {@code download}: "" or the URL blobs can be fetched from ({@code download + sha256}).
      */
-    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations, String key) {
+    public record Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations, String key, String download) {
         public static final Manifest EMPTY = new Manifest(List.of(), Map.of(), Map.of());
 
         public Manifest(List<Blob> blobs, Map<String, Map<String, Integer>> resources, Map<String, Integer> generations) {
-            this(blobs, resources, generations, "");
+            this(blobs, resources, generations, "", "");
         }
 
         public Manifest withKey(String key) {
-            return new Manifest(blobs, resources, generations, key);
+            return new Manifest(blobs, resources, generations, key, download);
+        }
+
+        public Manifest withDownload(String url) {
+            return new Manifest(blobs, resources, generations, key, url);
         }
 
         public int generation(String resource) {
             return generations.getOrDefault(resource, 0);
         }
+    }
+
+    /** "" or an http(s) URL ending in '/'. The client fetches whatever it is told, like a server resource pack's URL. */
+    public static boolean validDownload(String url) {
+        return url.isEmpty() || url.matches("https?://[\\x21-\\x7e]{1,500}/");
     }
 
     /** Resource names end up as URL hosts ({@code vitrine://name/}), so they stay lowercase and simple. */
@@ -113,20 +141,21 @@ public final class Protocol {
 
     public static byte[] encodeManifest(Manifest m) {
         if (m.key().length() != 64) throw new IllegalStateException("the manifest has no cache key");
-        Out out = new Out(MANIFEST).varint(VERSION).bytes(HEX.parseHex(m.key())).varint(m.blobs().size());
+        Out out = new Out(MANIFEST).varint(VERSION).varint(MIN_VERSION).bytes(HEX.parseHex(m.key())).varint(m.blobs().size());
         for (Blob b : m.blobs()) out.bytes(HEX.parseHex(b.sha256())).varlong(b.size());
         out.varint(m.resources().size());
         m.resources().forEach((name, files) -> {
             out.string(name).varint(m.generation(name)).varint(files.size());
             files.forEach((path, blob) -> out.string(path).varint(blob));
         });
-        return out.toByteArray();
+        return out.string(m.download()).toByteArray();
     }
 
     /** Decodes and validates a manifest from the server (untrusted on the client). In is past the type byte. */
     public static Manifest decodeManifest(In in) throws ProtocolException {
-        int version = in.varint();
-        if (version != VERSION) throw new ProtocolException("server speaks protocol " + version + ", this client " + VERSION);
+        int version = in.varint(), min = in.varint();
+        if (min > VERSION) throw new ProtocolException("this server needs a newer Troupe: update the mod (server protocol " + min + " or later, this client " + VERSION + ")");
+        if (version < MIN_VERSION) throw new ProtocolException("this server runs a Troupe too old for this client (server protocol " + version + ", this client " + MIN_VERSION + " or later)");
         String key = HEX.formatHex(in.bytes(32));
         int blobCount = in.count(MAX_BLOBS);
         List<Blob> blobs = new ArrayList<>(blobCount);
@@ -155,8 +184,10 @@ public final class Protocol {
             }
             resources.put(name, files);
         }
-        in.end();
-        return new Manifest(blobs, resources, generations, key);
+        String download = in.string();
+        if (!validDownload(download)) throw new ProtocolException("bad download URL");
+        if (version <= VERSION) in.end(); // a newer server may have appended fields this build doesn't know
+        return new Manifest(blobs, resources, generations, key, download);
     }
 
     /** Message writer: type byte first, then fields. */

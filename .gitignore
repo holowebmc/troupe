@@ -13,3 +13,4 @@ bin/
 run/
 hs_err_*.log
 logs/
+libs/

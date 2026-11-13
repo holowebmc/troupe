@@ -114,6 +114,11 @@ public final class Link implements Network {
     }
 
     @Override
+    public void entityState(String resource, String player, String entity, String key, String json) {
+        send(new Protocol.Out(Protocol.ENTITY).string(resource).string(entity).string(key == null ? "" : key).string(json == null ? "" : json));
+    }
+
+    @Override
     public void clear(String resource) {
         send(new Protocol.Out(Protocol.CLEAR).string(resource));
     }
@@ -166,7 +171,7 @@ public final class Link implements Network {
         int type = in.type();
         switch (type) {
             // ids 0 and 1: a pushed download (MANIFEST/CHUNK to the client, WANT/READY to the server)
-            case Protocol.MANIFEST, Protocol.CHUNK -> {
+            case Protocol.MANIFEST, Protocol.CHUNK, Protocol.FETCHED -> {
                 if (fromClient) {
                     if (serverSync == null) throw new ProtocolException("no download in progress");
                     if (serverSync.receive(message)) {
@@ -184,7 +189,15 @@ public final class Link implements Network {
                 } else {
                     if (clientSync == null) {
                         if (type != Protocol.MANIFEST) throw new ProtocolException("CHUNK before MANIFEST");
-                        clientSync = new ClientSync(cache, bytes -> out.send(bytes, null));
+                        ClientSync[] me = new ClientSync[1];
+                        clientSync = me[0] = new ClientSync(cache, bytes -> out.send(bytes, null), fetched -> host.executor().execute(() -> {
+                            if (closed || clientSync != me[0]) return;
+                            try {
+                                receive(fetched);
+                            } catch (IOException e) {
+                                out.disconnect("Troupe: " + e.getMessage());
+                            }
+                        }));
                     }
                     Protocol.Manifest done = clientSync.receive(message);
                     if (done != null) {
@@ -253,6 +266,12 @@ public final class Link implements Network {
                     in.end();
                     host.receiveState(resource, global, key, json.isEmpty() ? null : json);
                 }
+            }
+            case Protocol.ENTITY -> {
+                if (fromClient) throw new ProtocolException("clients can't send state");
+                String resource = in.string(), entity = in.string(), key = in.string(), json = in.text(max);
+                in.end();
+                host.receiveEntityState(resource, entity, key.isEmpty() ? null : key, json.isEmpty() ? null : json);
             }
             default -> throw new ProtocolException("unknown play message " + type);
         }

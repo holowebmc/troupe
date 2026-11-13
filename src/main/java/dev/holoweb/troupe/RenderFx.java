@@ -15,6 +15,9 @@ import java.util.concurrent.ThreadLocalRandom;
  * render.fov(multiplier | nil)     0.1..3 times the player's FOV
  * render.shake(intensity, seconds) the view shakes, fading out (intensity in degrees, up to 10)
  * render.camera({ x, y, z, yaw, pitch } | nil)   a fixed camera (cutscenes); nil gives it back to the player
+ * render.camera_path({ point, point, ... }, seconds, { ease = true, hold = false })
+ *                                  the camera travels through the points (same fields as above); at the end it goes
+ *                                  back to the player, or stays on the last point with hold
  * </pre>
  * Whatever a resource set goes away when it stops or the player leaves the server. Render thread.
  */
@@ -26,6 +29,19 @@ public final class RenderFx {
     private static long shakeStart, shakeEnd;
     /** x, y, z, yaw, pitch of the fixed camera, or null. */
     public static volatile double[] camera;
+    private static dev.holoweb.troupe.lua.CameraPath path;
+    private static long pathStart, pathNanos;
+    private static boolean pathHold;
+
+    /** Where the camera is this frame ({@code x, y, z, yaw, pitch}), or null when it's the player's. */
+    public static double[] camera() {
+        var p = path;
+        if (p == null) return camera;
+        double t = (System.nanoTime() - pathStart) / (double) pathNanos;
+        if (t < 1) return p.at(t);
+        path = null;
+        return camera = pathHold ? p.at(1) : null;
+    }
 
     private RenderFx() {}
 
@@ -50,6 +66,7 @@ public final class RenderFx {
                     return null;
                 })
                 .function("camera", a -> {
+                    path = null;
                     if (a.get(0) == null) {
                         camera = null;
                         return null;
@@ -58,11 +75,31 @@ public final class RenderFx {
                     camera = new double[]{num(o, "x"), num(o, "y"), num(o, "z"), opt(o, "yaw"), opt(o, "pitch")};
                     cameraOwner = a.resource();
                     return null;
+                })
+                .function("camera_path", a -> {
+                    java.util.List<double[]> keys = new java.util.ArrayList<>();
+                    for (Object point : a.list(0)) {
+                        if (!(point instanceof Map<?, ?> m)) throw new IllegalArgumentException("each point is { x, y, z, yaw, pitch }");
+                        @SuppressWarnings("unchecked") Map<String, Object> o = (Map<String, Object>) m;
+                        keys.add(new double[]{num(o, "x"), num(o, "y"), num(o, "z"), opt(o, "yaw"), opt(o, "pitch")});
+                    }
+                    double seconds = a.number(1);
+                    if (!(seconds > 0) || seconds > 600) throw new IllegalArgumentException("seconds must be 0..600");
+                    Map<String, Object> opts = a.get(2) == null ? Map.of() : a.table(2);
+                    path = new dev.holoweb.troupe.lua.CameraPath(keys, !Boolean.FALSE.equals(opts.get("ease")));
+                    pathHold = Boolean.TRUE.equals(opts.get("hold"));
+                    pathStart = System.nanoTime();
+                    pathNanos = (long) (seconds * 1e9);
+                    cameraOwner = a.resource();
+                    return null;
                 });
         host.onStop(resource -> {
             if (resource.equals(postOwner)) post = null;
             if (resource.equals(fovOwner)) fov = 1;
-            if (resource.equals(cameraOwner)) camera = null;
+            if (resource.equals(cameraOwner)) {
+                camera = null;
+                path = null;
+            }
         });
     }
 
@@ -71,6 +108,7 @@ public final class RenderFx {
         post = null;
         fov = 1;
         camera = null;
+        path = null;
         shakeEnd = 0;
     }
 

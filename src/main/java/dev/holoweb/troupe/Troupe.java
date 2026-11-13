@@ -44,6 +44,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class Troupe implements ModInitializer {
     public static final Logger LOG = LoggerFactory.getLogger("troupe");
+    public static final String VERSION = net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("troupe")
+            .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse(null);
 
     private static volatile MinecraftServer server;
     private static final ResourceHost host = new ResourceHost(Side.SERVER, task -> {
@@ -52,6 +54,7 @@ public final class Troupe implements ModInitializer {
     });
     private static final Links links = new Links(host);
     private static final ServerApi api = new ServerApi(host.modules(), host, () -> server);
+    private static final dev.holoweb.troupe.lua.DbApi db = new dev.holoweb.troupe.lua.DbApi(host.modules());
     /** Every resource on disk (last scan). */
     private static volatile ServerResources resources = ServerResources.EMPTY;
     /** What clients run: the running resources with client files, with their generations. */
@@ -69,20 +72,53 @@ public final class Troupe implements ModInitializer {
         ConfigPhase.register(() -> published, configured);
         TroupeStatus.serve(() -> published.manifest());
         host.setNetwork(links);
+        host.setVersion(VERSION);
+        // entity.state / player.public go to who has the entity in sight (the game's own entity tracking).
+        host.setEntityWatchers(Troupe::watchers);
+        net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents.START_TRACKING.register(
+                (entity, player) -> host.showEntity(entity.getStringUUID(), player.getStringUUID()));
+        net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents.STOP_TRACKING.register(
+                (entity, player) -> host.hideEntity(entity.getStringUUID(), player.getStringUUID()));
+        net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.ENTITY_UNLOAD.register((entity, level) -> {
+            var reason = entity.getRemovalReason();
+            if (reason == null || !reason.shouldDestroy()) return;
+            host.entityGone(entity.getStringUUID());
+            Instances.forget(entity.getUUID());
+        });
+        host.onFault((name, why) -> publish()); // connected clients stop it too
         registerModules(host.modules());
 
         ServerLifecycleEvents.SERVER_STARTING.register(s -> {
             server = s;
+            config = readConfig();
             host.setJavaAllow(javaAllow());
+            startDownloads();
+            openDatabase(s);
             rescan(s);
         });
         ServerLifecycleEvents.SERVER_STARTED.register(s -> {
-            host.startAll();
-            publish();
+            Path world = Compat.worldWithResources(s);
+            String name = world == null ? null : world.getFileName().toString();
+            if (name != null && !resources.infos().isEmpty() && !worldAllowed.test(name)) {
+                pendingWorld = name; // the client asks once the player is in; allowWorld() starts them
+                LOG.info("The world '{}' brings {} resources; waiting for the player to allow its scripts", name, resources.infos().size());
+            } else {
+                host.startAll();
+                publish();
+            }
             if (DEV) LOG.info("Dev mode: resources restart when their files change");
         });
-        ServerLifecycleEvents.SERVER_STOPPING.register(s -> host.stopAll());
-        ServerLifecycleEvents.SERVER_STOPPED.register(s -> server = null);
+        ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
+            host.stopAll();
+            db.close(); // after the resources: what their on_stop asked for is written first
+        });
+        ServerLifecycleEvents.SERVER_STOPPED.register(s -> {
+            server = null;
+            pendingWorld = null;
+            api.stopped();
+            if (blobServer != null) blobServer.close();
+            blobServer = null;
+        });
         ServerTickEvents.END_SERVER_TICK.register(s -> {
             host.tick();
             api.tick();
@@ -151,6 +187,53 @@ public final class Troupe implements ModInitializer {
         }
     }
 
+    /**
+     * Maps: whether the player already allowed the scripts of the world in this folder. The client sets it; a dedicated
+     * server has nobody to ask, and its resources are its owner's.
+     */
+    static volatile java.util.function.Predicate<String> worldAllowed = world -> true;
+    private static volatile String pendingWorld;
+
+    /** The world whose resources wait for the player's word (its folder name), or null. */
+    static String pendingWorld() {
+        return pendingWorld;
+    }
+
+    static int pendingResources() {
+        return resources.infos().size();
+    }
+
+    /** The player said yes: the world's resources start, and the connected client gets them like any restart. */
+    static void allowWorld() {
+        MinecraftServer s = server;
+        if (s == null || pendingWorld == null) return;
+        pendingWorld = null;
+        s.execute(() -> {
+            host.startAll();
+            publish();
+        });
+    }
+
+    private static java.util.Collection<String> watchers(String entityId) {
+        MinecraftServer s = server;
+        if (s == null) return java.util.List.of();
+        java.util.UUID uuid;
+        try {
+            uuid = java.util.UUID.fromString(entityId);
+        } catch (IllegalArgumentException e) {
+            return java.util.List.of();
+        }
+        for (var level : s.getAllLevels()) {
+            var entity = level.getEntity(uuid);
+            if (entity == null) continue;
+            java.util.List<String> out = new java.util.ArrayList<>();
+            for (ServerPlayer p : net.fabricmc.fabric.api.networking.v1.PlayerLookup.tracking(entity)) out.add(p.getStringUUID());
+            if (entity instanceof ServerPlayer) out.add(entityId);
+            return out;
+        }
+        return java.util.List.of();
+    }
+
     /** Calls the {@code troupe} entrypoint and the side-specific one with this side's module registry. */
     static void registerModules(Modules modules) {
         String sideEntrypoint = modules.side() == Side.CLIENT ? "troupe-client" : "troupe-server";
@@ -172,7 +255,7 @@ public final class Troupe implements ModInitializer {
     private static void rescan(MinecraftServer s) {
         Path root = Compat.serverDir(s).resolve("resources");
         try {
-            resources = ServerResources.scan(root, w -> LOG.warn("Resource {}", w)).withKey(cacheKey(s));
+            resources = ServerResources.scan(root, w -> LOG.warn("Resource {}", w)).withKey(cacheKey(s)).withDownload(downloadUrl);
         } catch (IOException e) {
             LOG.error("Could not read the resources folder", e);
             resources = ServerResources.EMPTY.withKey(cacheKey(s));
@@ -209,6 +292,23 @@ public final class Troupe implements ModInitializer {
      * Written with an empty list (off) the first time.
      */
     private static java.util.List<String> javaAllow() {
+        try {
+            java.util.List<String> allow = new java.util.ArrayList<>();
+            if (config.has("java")) for (var e : config.getAsJsonObject("java").getAsJsonArray("allow")) allow.add(e.getAsString());
+            if (!allow.isEmpty()) LOG.warn("java.* is on for server resources: {}", allow);
+            return allow;
+        } catch (RuntimeException e) {
+            LOG.error("Bad \"java\" in config/troupe.json; java.* stays off", e);
+            return java.util.List.of();
+        }
+    }
+
+    /** {@code config/troupe.json} (comments allowed), read when the server starts; written with the defaults the first time. */
+    private static com.google.gson.JsonObject config = new com.google.gson.JsonObject();
+    private static dev.holoweb.troupe.net.BlobServer blobServer;
+    private static String downloadUrl = "";
+
+    private static com.google.gson.JsonObject readConfig() {
         Path file = FabricLoader.getInstance().getConfigDir().resolve("troupe.json");
         try {
             if (!Files.exists(file)) {
@@ -218,17 +318,63 @@ public final class Troupe implements ModInitializer {
                           // Packages (or classes) server resources may reach with java.class / java.new, e.g.
                           // "com.simibubi.create.api". Empty: java.* is off. Only for code you trust: it runs as the server.
                           "java": { "allow": [] }
+
+                          // Faster first join: clients fetch the files with GET <url><sha256> and fall back to the game
+                          // connection. "port" makes this server answer there itself (open it in the firewall); leave it out
+                          // when something else serves the same paths (a CDN pulling from that port, for example).
+                          // , "download": { "url": "http://play.example.com:25580/", "port": 25580 }
+
+                          // Where db.query / db.execute keep their data. Left out: SQLite in troupe/data.db. Any JDBC URL
+                          // works with its driver's jar in mods/; "driver" is that driver's class.
+                          // , "database": { "url": "jdbc:mysql://localhost/troupe", "driver": "com.mysql.cj.jdbc.Driver",
+                          //                 "user": "troupe", "password": "..." }
                         }
                         """);
             }
-            var root = com.google.gson.JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-            java.util.List<String> allow = new java.util.ArrayList<>();
-            if (root.has("java")) for (var e : root.getAsJsonObject("java").getAsJsonArray("allow")) allow.add(e.getAsString());
-            if (!allow.isEmpty()) LOG.warn("java.* is on for server resources: {}", allow);
-            return allow;
+            return com.google.gson.JsonParser.parseString(Files.readString(file)).getAsJsonObject();
         } catch (IOException | RuntimeException e) {
-            LOG.error("Couldn't read {}; java.* stays off", file, e);
-            return java.util.List.of();
+            LOG.error("Couldn't read {}; using the defaults", file, e);
+            return new com.google.gson.JsonObject();
+        }
+    }
+
+    /** {@code database} in the config, or SQLite in {@code troupe/data.db}. Nothing is opened until a script uses it. */
+    private static void openDatabase(MinecraftServer s) {
+        Path file = Compat.serverDir(s).resolve("troupe/data.db").toAbsolutePath();
+        String url = "jdbc:sqlite:" + file.toString().replace('\\', '/'), driver = null, user = null, password = null;
+        try {
+            Files.createDirectories(file.getParent());
+            if (config.has("database")) {
+                var d = config.getAsJsonObject("database");
+                url = d.get("url").getAsString();
+                if (!url.startsWith("jdbc:")) throw new IllegalArgumentException("database.url must be a JDBC URL (jdbc:...)");
+                driver = d.has("driver") ? d.get("driver").getAsString() : null;
+                user = d.has("user") ? d.get("user").getAsString() : null;
+                password = d.has("password") ? d.get("password").getAsString() : null;
+                LOG.info("Database: {}", url.replaceAll("^(jdbc:[a-z0-9]+).*", "$1")); // never the whole URL: it may carry a password
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.error("Bad \"database\" in config/troupe.json; using SQLite in {}", file, e);
+            url = "jdbc:sqlite:" + file.toString().replace('\\', '/');
+            driver = user = password = null;
+        }
+        db.open(url, driver, user, password);
+    }
+
+    /** {@code download} in the config: the URL clients are told, and the built-in file server when it has a port. */
+    private static void startDownloads() {
+        downloadUrl = "";
+        try {
+            if (!config.has("download")) return;
+            var d = config.getAsJsonObject("download");
+            String url = d.get("url").getAsString();
+            if (!url.endsWith("/")) url += "/";
+            if (url.length() < 9 || !dev.holoweb.troupe.net.Protocol.validDownload(url)) throw new IllegalArgumentException("download.url must be an http(s) URL");
+            if (d.has("port")) blobServer = new dev.holoweb.troupe.net.BlobServer(d.get("port").getAsInt());
+            downloadUrl = url;
+            LOG.info("Clients download from {}{}", url, blobServer == null ? "" : " (served here, port " + blobServer.port() + ")");
+        } catch (IOException | RuntimeException | LinkageError e) { // LinkageError: a runtime without jdk.httpserver
+            LOG.error("Bad \"download\" in config/troupe.json; clients download through the game connection", e);
         }
     }
 
@@ -237,6 +383,7 @@ public final class Troupe implements ModInitializer {
         ServerResources now = resources.only(host.running());
         if (now.manifest().equals(published.manifest())) return;
         published = now;
+        if (blobServer != null) blobServer.serve(now);
         links.push(now);
     }
 
@@ -245,7 +392,7 @@ public final class Troupe implements ModInitializer {
         Map<String, Long> now = ServerResources.stamps(Compat.serverDir(s).resolve("resources"));
         Map<String, Long> before = devStamps;
         devStamps = now;
-        if (before == null || before.equals(now)) return;
+        if (before == null || before.equals(now) || pendingWorld != null) return;
         rescan(s);
         java.util.Set<String> names = new java.util.TreeSet<>(now.keySet());
         names.addAll(before.keySet());

@@ -53,7 +53,20 @@ final class Compat {
         /*return src.hasPermission(level);*/
     }
 
+    /**
+     * A singleplayer (or LAN) world that brings its own {@code resources/} folder, as a downloaded map does: the
+     * world's folder, else null.
+     */
+    static Path worldWithResources(MinecraftServer s) {
+        if (s.isDedicatedServer()) return null;
+        Path world = s.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT).toAbsolutePath().normalize();
+        return java.nio.file.Files.isDirectory(world.resolve("resources")) ? world : null;
+    }
+
+    /** Where {@code resources/} and {@code troupe/} (store, database, cache key) live: the server's folder, or the map's. */
     static Path serverDir(MinecraftServer s) {
+        Path world = worldWithResources(s);
+        if (world != null) return world;
         //? if >=1.21 {
         return s.getServerDirectory();
         //?} else

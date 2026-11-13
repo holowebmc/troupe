@@ -43,6 +43,124 @@ class GameApiTest {
     }
 
     @Test
+    void zonesAndCameraPaths() throws Exception {
+        ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
+        Zones zones = new Zones();
+        Module zone = host.modules().global("zone")
+                .function("create", a -> zones.create(a.resource(), "overworld", a.table(0)))
+                .function("remove", a -> {
+                    zones.remove(a.resource(), a.integer(0));
+                    return null;
+                })
+                .function("players", a -> zones.inside(a.resource(), a.integer(0)).stream().map(id -> new Peer(id, "Ana")).toList())
+                .event("enter").event("leave");
+        host.modules().global("probe").function("see", a -> log.add(String.valueOf(a.get(0))));
+        start(host, "server", """
+                local loja = zone.box({ 0, 60, 0 }, { x = 10, y = 70, z = 10 })
+                loja:on_enter(function(p, z) probe.see('entrou ' .. p.name .. ' ' .. #z:players()) end)
+                loja:on_leave(function(p) probe.see('saiu ' .. p.name) end)
+                local bola = zone.sphere({ 100, 64, 100 }, 5)
+                bola:on_enter(function(p) probe.see('bola') bola:remove() end)
+                probe.see(select(2, pcall(zone.sphere, { 0, 0, 0 }, -1)))
+                """);
+        Peer ana = new Peer("p1", "Ana");
+        Zones.Sink sink = (resource, enter, id) -> host.modules().emitTo(resource, zone, enter ? "enter" : "leave", id, ana);
+        zones.update("p1", "overworld", 5, 65, 5, sink);
+        zones.update("p1", "overworld", 6, 65, 5, sink);     // still inside: nothing
+        zones.update("p1", "nether", 5, 65, 5, sink);        // same numbers, another dimension
+        zones.update("p1", "overworld", 100, 64, 103, sink);
+        zones.update("p1", "overworld", 500, 64, 500, sink); // the sphere removed itself: no leave
+        zones.update("p1", "overworld", 5, 65, 5, sink);
+        zones.left("p1", sink);
+        assertTrue(log.get(0).contains("radius must be > 0"), log.get(0));
+        assertEquals(List.of("entrou Ana 1", "saiu Ana", "bola", "entrou Ana 1", "saiu Ana"), log.subList(1, log.size()));
+
+        CameraPath path = new CameraPath(List.of(new double[]{0, 0, 0, 350, 0}, new double[]{10, 0, 0, 10, 20}, new double[]{10, 0, 10, 10, 20}), false);
+        assertArrayEquals(new double[]{0, 0, 0, 350, 0}, path.at(0), 1e-9);
+        assertArrayEquals(new double[]{10, 0, 0, 10, 20}, path.at(0.5), 1e-9, "it goes through every point");
+        assertArrayEquals(new double[]{10, 0, 10, 10, 20}, path.at(2), 1e-9);
+        assertEquals(360, path.at(0.25)[3], 1e-9, "350 to 10 turns through 360, not back through 180");
+    }
+
+    /** Runs what other threads hand to the game thread until the script has reported {@code lines} lines. */
+    private void pump(java.util.concurrent.BlockingQueue<Runnable> tasks, int lines) throws InterruptedException {
+        while (log.size() < lines) {
+            Runnable task = tasks.poll(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertNotNull(task, "no answer: " + log);
+            task.run();
+        }
+    }
+
+    @Test
+    void databaseOnTheServer() throws Exception {
+        java.nio.file.Path file = java.nio.file.Files.createTempFile("troupe", ".db");
+        var tasks = new java.util.concurrent.LinkedBlockingQueue<Runnable>();
+        ResourceHost host = new ResourceHost(Side.SERVER, tasks::add);
+        host.modules().global("probe").function("see", a -> log.add(String.valueOf(a.get(0))));
+        DbApi db = new DbApi(host.modules());
+        db.open("jdbc:sqlite:" + file.toString().replace('\\', '/'), null, null, null);
+        start(host, "server", """
+                db.execute('CREATE TABLE contas (id INTEGER PRIMARY KEY, nome TEXT, saldo REAL)')
+                local r = db.execute('INSERT INTO contas (nome, saldo) VALUES (?, ?)', { 'Ana ção', 10.5 })
+                probe.see(r.changes .. ' ' .. r.id)
+                db.batch({ { 'INSERT INTO contas (nome, saldo) VALUES (?, ?)', { 'Bia', 3 } }, 'UPDATE contas SET saldo = saldo + 1' })
+                local rows = db.query('SELECT nome, saldo FROM contas WHERE saldo > ? ORDER BY id', { 0 })
+                probe.see(#rows .. ' ' .. rows[1].nome .. ' ' .. rows[1].saldo .. ' ' .. rows[2].saldo)
+                probe.see(select(2, pcall(db.batch, { { 'INSERT INTO contas (nome) VALUES (?)', { 'Cau' } }, 'INSERT INTO nope VALUES (1)' })))
+                probe.see(#db.query('SELECT 1 FROM contas'))
+                probe.see(db.query('SELECT ? AS x', 'x')[1].x)
+                db.execute('CREATE TABLE n (a TEXT, b INTEGER, c TEXT)')
+                db.execute('INSERT INTO n VALUES (?, ?, ?)', 'um', nil, nil)                  -- one by one: nil is NULL, even last
+                db.execute('INSERT INTO n VALUES (?, ?, ?)', { db.null, 2, db.null })       -- in a list: db.null
+                db.execute('INSERT INTO n VALUES (?, ?, ?)', { 'tres', nil, 'fim' })        -- a nil in the middle of a list
+                db.batch({ { 'INSERT INTO n VALUES (?, ?, ?)', { 'quatro', db.null, db.null } } })
+                local nulls = db.query('SELECT a, b, c FROM n WHERE b IS NULL ORDER BY rowid')
+                probe.see(#nulls .. ' ' .. tostring(nulls[1].b) .. ' ' .. tostring(nulls[1].c) .. ' ' .. nulls[2].c .. ' ' .. nulls[3].a)
+                probe.see(#db.query('SELECT 1 FROM n WHERE a IS ? AND b = ?', nil, 2))
+                """);
+        pump(tasks, 7);
+        db.close();
+        assertEquals("1 1", log.get(0));
+        assertEquals("2 Ana ção 11.5 4", log.get(1));
+        assertTrue(log.get(2).contains("nope"), log.get(2));
+        assertEquals("2", log.get(3), "the failed batch left nothing behind");
+        assertEquals("x", log.get(4), "one parameter, not in a list");
+        assertEquals("3 nil nil fim quatro", log.get(5), "NULL goes in, and comes back as nil");
+        assertEquals("1", log.get(6));
+        assertTrue(java.nio.file.Files.size(file) > 0, "the data is on disk");
+    }
+
+    @Test
+    void httpAndJsonOnTheServer() throws Exception {
+        java.nio.file.Path file = java.nio.file.Files.createTempFile("troupe", ".json");
+        java.nio.file.Files.writeString(file, "{\"saldo\": 7, \"nome\": \"ação\"}");
+        var tasks = new java.util.concurrent.LinkedBlockingQueue<Runnable>(); // answers come from the HTTP client's threads
+        ResourceHost host = new ResourceHost(Side.SERVER, tasks::add);
+        host.modules().global("probe").function("see", a -> log.add(String.valueOf(a.get(0))));
+        try (var http = new dev.holoweb.troupe.net.BlobServer(0)) {
+            var blob = new dev.holoweb.troupe.net.Protocol.Blob("abc", java.nio.file.Files.size(file));
+            http.serve(new dev.holoweb.troupe.net.ServerResources(
+                    new dev.holoweb.troupe.net.Protocol.Manifest(List.of(blob), Map.of(), Map.of()), List.of(file), Map.of(), file.getParent()));
+            start(host, "server", """
+                    local base = 'http://127.0.0.1:%d/'
+                    local r = http.get(base .. 'abc')
+                    local data = json.decode(r.body)
+                    probe.see(r.status .. ' ' .. data.saldo .. ' ' .. data.nome .. ' ' .. r.headers['content-length'])
+                    probe.see(http.post(base .. 'abc', json.encode({ a = 1 })).status)
+                    probe.see(select(2, pcall(http.get, 'ftp://x/')))
+                    probe.see(select(2, pcall(http.get, 'http://127.0.0.1:1/', { timeout = 2 })) ~= nil)
+                    probe.see(json.encode({ 1, 2 }) .. json.encode(json.decode('{"x":[true,2]}')))
+                    """.formatted(http.port()));
+            pump(tasks, 5);
+        }
+        assertEquals("200 7 ação " + java.nio.file.Files.size(file), log.get(0));
+        assertEquals("404", log.get(1), "the file server only answers GET");
+        assertTrue(log.get(2).contains("only http and https"), log.get(2));
+        assertEquals("true", log.get(3));
+        assertEquals("[1,2]{\"x\":[true,2]}", log.get(4));
+    }
+
+    @Test
     void cancellableEvents() throws Exception {
         ResourceHost host = new ResourceHost(Side.SERVER, Runnable::run);
         Module players = host.modules().global("players").event("break").event("place");

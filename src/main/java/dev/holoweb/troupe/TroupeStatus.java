@@ -24,9 +24,9 @@ import java.util.function.Supplier;
  */
 public final class TroupeStatus {
     /** What a server says about its resources; {@code size} is the whole client download, in bytes. */
-    public record Info(int protocol, int resources, long size, List<String> names) {
+    public record Info(int protocol, int min, int resources, long size, List<String> names) {
         public boolean compatible() {
-            return protocol == Protocol.VERSION;
+            return Protocol.compatible(protocol, min);
         }
     }
 
@@ -48,6 +48,7 @@ public final class TroupeStatus {
         if (m.resources().isEmpty()) return null;
         JsonObject o = new JsonObject();
         o.addProperty("protocol", Protocol.VERSION);
+        o.addProperty("min", Protocol.MIN_VERSION);
         o.addProperty("resources", m.resources().size());
         o.addProperty("size", m.blobs().stream().mapToLong(Protocol.Blob::size).sum());
         JsonArray names = new JsonArray();
@@ -68,7 +69,7 @@ public final class TroupeStatus {
                 if (names.size() == MAX_NAMES) break;
                 if (n.isJsonPrimitive() && Protocol.validName(n.getAsString())) names.add(n.getAsString());
             }
-            return new Info(protocol, resources, size, List.copyOf(names));
+            return new Info(protocol, o.has("min") ? o.get("min").getAsInt() : protocol, resources, size, List.copyOf(names));
         } catch (RuntimeException ex) {
             return null;
         }

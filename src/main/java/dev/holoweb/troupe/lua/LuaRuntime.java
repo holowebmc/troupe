@@ -51,6 +51,20 @@ import java.util.regex.Pattern;
 public final class LuaRuntime {
     /** A task step that runs this long without yielding or returning is stopped (pcall can't catch it). */
     public static final long TIME_LIMIT_MS = 2000;
+
+    /**
+     * What a resource may use. One step past {@code stepMs} is cut and the resource goes on; past any other limit the
+     * resource is stopped: {@code cpuMs} of Lua time or {@code windowAlloc} bytes allocated in {@code windowMs}, or
+     * {@code stepAlloc} bytes allocated by one step. Allocation is what the JVM counts for the game thread while the
+     * step runs (Cobalt doesn't track memory), garbage included.
+     */
+    public record Limits(long stepMs, long windowMs, long cpuMs, long stepAlloc, long windowAlloc) {
+        public static final Limits DEFAULT = new Limits(TIME_LIMIT_MS, 10_000, 3_000, 256L << 20, 1L << 30);
+    }
+
+    private static final com.sun.management.ThreadMXBean THREADS =
+            java.lang.management.ManagementFactory.getThreadMXBean() instanceof com.sun.management.ThreadMXBean t
+                    && t.isThreadAllocatedMemorySupported() && t.isThreadAllocatedMemoryEnabled() ? t : null;
     static final Logger LOG = LoggerFactory.getLogger("troupe");
 
     /** The resource's files by path ({@code shared/config.lua}); null when missing. */
@@ -78,9 +92,11 @@ public final class LuaRuntime {
             long now = System.nanoTime();
             for (LuaRuntime r : ACTIVE) {
                 long deadline = r.deadline;
-                if (deadline != 0 && now - deadline > 0) r.state.interrupt();
+                if (deadline == 0) continue;
+                if (now - deadline > 0 || THREADS != null
+                        && THREADS.getThreadAllocatedBytes(r.stepThread) - r.stepAllocStart > r.limits.stepAlloc()) r.state.interrupt();
             }
-        }, 100, 100, TimeUnit.MILLISECONDS);
+        }, 10, 10, TimeUnit.MILLISECONDS); // 10 ms: a script allocates tens of MB in that time, not GBs
     }
 
     private static final class Task {
@@ -112,10 +128,31 @@ public final class LuaRuntime {
     /** Methods of entity handles ({@link EntityRef}); the prelude fills it ({@code entity:pos()}). */
     final LuaTable entityMethods = new LuaTable();
     final NetApi net;
+    private LuaTable entityMeta;
+
+    /** Metatable of entity handles: the prelude's methods, and {@code entity.state} made on first use. */
+    LuaTable entityMeta() {
+        if (entityMeta == null) {
+            entityMeta = new LuaTable();
+            entityMeta.rawset("__index", LibFunction.create((s, self, key) -> {
+                if (self instanceof LuaTable t && key.isString() && Values.str(key).equals("state")) {
+                    LuaTable state = net.entityState(Values.str(t.rawget("id")));
+                    t.rawset("state", state);
+                    return state;
+                }
+                return entityMethods.rawget(key);
+            }));
+        }
+        return entityMeta;
+    }
     private final UiApi ui; // client only
 
+    private final Limits limits;
+    private volatile long stepThread, stepAllocStart; // of the running step, for the watchdog; set before deadline
     private volatile long deadline; // System.nanoTime() limit of the running step, 0 when idle
-    private boolean timedOut;
+    private String cut; // why the interrupt handler stopped the running step
+    private String fault; // over a limit: nothing more runs, and the host stops the resource on its next tick
+    private long windowStart, windowNanos, windowAlloc, totalAlloc;
     private Task current;
     private boolean draining;
     private final ArrayDeque<Step> queue = new ArrayDeque<>();
@@ -133,6 +170,7 @@ public final class LuaRuntime {
         this.side = side;
         this.files = files;
         this.host = host;
+        this.limits = host.limits();
         state = LuaState.builder().interruptHandler(this::interrupted).build();
         ACTIVE.add(this);
 
@@ -216,6 +254,7 @@ public final class LuaRuntime {
     /** Runs the {@code on_stop} handlers, then fails whatever waits on this resource and drops everything. */
     void close() {
         if (closed) return;
+        fault = null; // on_stop still runs (a server script saves there), under the same step limits
         for (LuaFunction hook : stopHooks) spawn(hook, Constants.NONE, "on_stop", null);
         closed = true;
         List<Task> dropped = new ArrayList<>(waiting.values());
@@ -244,7 +283,7 @@ public final class LuaRuntime {
         try {
             Step s;
             while ((s = queue.poll()) != null) {
-                if (closed) drop(s.task());
+                if (closed || fault != null) drop(s.task());
                 else step(s.task(), s.args());
             }
         } finally {
@@ -254,19 +293,26 @@ public final class LuaRuntime {
 
     private void step(Task task, Varargs args) {
         current = task;
-        timedOut = false;
-        deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TIME_LIMIT_MS);
+        cut = null;
+        long t0 = System.nanoTime();
+        stepThread = Thread.currentThread().getId();
+        stepAllocStart = allocated();
+        deadline = t0 + TimeUnit.MILLISECONDS.toNanos(limits.stepMs());
         Varargs result = Constants.NONE;
         String error = null;
         try {
             result = LuaThread.run(task.thread, args);
-            if (timedOut) error = "stopped after running " + TIME_LIMIT_MS + " ms without waiting or returning";
+            error = cut;
         } catch (LuaError e) {
             error = Values.readable(e.getMessage());
+        } catch (OutOfMemoryError e) { // one huge allocation (string.rep) fails without taking the game down
+            error = fault = "ran out of memory";
         } finally {
             deadline = 0;
             current = null;
+            account(System.nanoTime(), t0, allocated() - stepAllocStart);
         }
+        if (fault != null && error == null) error = fault;
         if (error == null && task.thread.isAlive()) {
             if (result.first() == token) {
                 suspend(task, result);
@@ -317,6 +363,32 @@ public final class LuaRuntime {
                                 wake(task, wake, Values.readable(e.getMessage()), Constants.NONE);
                             }
                         });
+                // A module function that answers later: it gets one more argument, a Callback to call with
+                // (error) or (nil, results...), from any thread.
+                case "module" -> {
+                    String mod = Values.str(rest.arg(1)), fn = Values.str(rest.arg(2));
+                    ModuleFunction function = module(mod).function(fn);
+                    if (function == null) throw new LuaError("module '" + mod + "' has no function '" + fn + "'");
+                    List<Object> args = new ArrayList<>(Values.toJava(this, rest, 3));
+                    args.add((Callback) r -> host.executor().execute(() -> {
+                        if (r.length > 0 && r[0] != null) {
+                            wake(task, wake, mod + "." + fn + ": " + r[0], Constants.NONE);
+                            return;
+                        }
+                        try {
+                            wake(task, wake, null, toLuaArgs(java.util.Arrays.copyOfRange(r, Math.min(1, r.length), r.length)));
+                        } catch (LuaError e) {
+                            wake(task, wake, Values.readable(e.getMessage()), Constants.NONE);
+                        }
+                    }));
+                    try {
+                        function.call(new Args(name, side, args));
+                    } catch (LuaError e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new LuaError(mod + "." + fn + ": " + (e instanceof IllegalArgumentException ? e.getMessage() : e.toString()));
+                    }
+                }
                 default -> throw new LuaError("unknown wait '" + kind + "'");
             }
         } catch (LuaError e) {
@@ -344,9 +416,46 @@ public final class LuaRuntime {
 
     private InterruptAction interrupted() {
         long d = deadline;
-        if (d == 0 || System.nanoTime() - d < 0) return InterruptAction.CONTINUE;
-        timedOut = true;
+        if (d == 0) return InterruptAction.CONTINUE;
+        if (allocated() - stepAllocStart > limits.stepAlloc()) cut = "stopped: too much memory in one call"; // account() faults it
+        else if (System.nanoTime() - d < 0) return InterruptAction.CONTINUE;
+        else cut = "stopped after running " + limits.stepMs() + " ms without waiting or returning";
         return InterruptAction.SUSPEND; // unwinds the whole step: pcall can't keep a runaway script alive
+    }
+
+    private static long allocated() {
+        return THREADS == null ? 0 : THREADS.getCurrentThreadAllocatedBytes();
+    }
+
+    /** Adds a finished step to the window. Tumbling window: up to twice the budget fits across a boundary. */
+    private void account(long now, long t0, long alloc) {
+        if (now - windowStart > TimeUnit.MILLISECONDS.toNanos(limits.windowMs())) {
+            windowStart = now;
+            windowNanos = windowAlloc = 0;
+        }
+        windowNanos += now - t0;
+        windowAlloc += alloc;
+        totalAlloc += alloc;
+        if (fault != null) return;
+        if (alloc > limits.stepAlloc()) fault = "allocated more than " + (limits.stepAlloc() >> 20) + " MB in one call";
+        else if (windowAlloc > limits.windowAlloc())
+            fault = "allocated more than " + (limits.windowAlloc() >> 20) + " MB in " + limits.windowMs() / 1000 + " s";
+        else if (windowNanos > TimeUnit.MILLISECONDS.toNanos(limits.cpuMs()))
+            fault = "ran for more than " + limits.cpuMs() + " ms in " + limits.windowMs() / 1000 + " s";
+    }
+
+    /** Why the resource must stop (it went over a limit), or null. */
+    String fault() {
+        return fault;
+    }
+
+    void fault(String why) {
+        if (fault == null) fault = why;
+    }
+
+    /** Bytes its steps allocated since it started. */
+    long totalAlloc() {
+        return totalAlloc;
     }
 
     // ---- exports

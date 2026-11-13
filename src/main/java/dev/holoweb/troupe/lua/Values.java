@@ -97,9 +97,7 @@ final class Values {
             LuaTable t = new LuaTable();
             t.rawset("id", lua(e.id()));
             t.rawset("type", lua(e.type()));
-            LuaTable meta = new LuaTable();
-            meta.rawset("__index", runtime.entityMethods);
-            t.setMetatable(null, meta);
+            t.setMetatable(null, runtime.entityMeta());
             return t;
         }
         if (o instanceof LuaRuntime.LuaCallback c) {

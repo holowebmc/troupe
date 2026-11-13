@@ -43,6 +43,8 @@ public final class TroupeClient implements ClientModInitializer {
     private static final ClientAssets assets = new ClientAssets(CACHE);
     private static final ClientHud hud = new ClientHud(host.modules(), host);
     private static final WorldDraw world = new WorldDraw(host.modules(), host);
+    private static ClientKeys keys;
+    private static ClientInteract interact;
 
     // Written on the Netty thread (Fabric runs configuration receivers there), read from the render thread.
     private static volatile ClientSync sync;
@@ -126,6 +128,8 @@ public final class TroupeClient implements ClientModInitializer {
                 host.stopAll();
                 assets.clear();
                 hud.clear();
+                keys.clear();
+                interact.clear();
                 world.clear();
                 RenderFx.reset();
                 host.setNetwork(null);
@@ -137,6 +141,11 @@ public final class TroupeClient implements ClientModInitializer {
         //?} else
         /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
         RenderFx.register(host.modules(), host);
+        host.setVersion(Troupe.VERSION);
+        host.onFault((name, why) -> {
+            var player = Minecraft.getInstance().player;
+            if (player != null) player.sendSystemMessage(net.minecraft.network.chat.Component.translatable("troupe.fault", name));
+        });
         //? if >=26.1 {
         net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents.COLLECT_SUBMITS.register(world::render);
         //?} else
@@ -146,9 +155,16 @@ public final class TroupeClient implements ClientModInitializer {
                 net.minecraft.resources.Identifier.fromNamespaceAndPath("troupe", "hud"), (gui, delta) -> hud.draw(gui));
         //?} else
         /*net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((gui, delta) -> hud.draw(gui));*/
+        Troupe.worldAllowed = world -> lines(TRUSTED_WORLDS).contains(world);
+        ClientKeys.init();
+        keys = new ClientKeys(host.modules(), host, CACHE.resolveSibling("keys.json"));
+        interact = new ClientInteract(host, hud);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             api.tick();
+            keys.tick();
+            interact.tick(client);
             host.tick();
+            askAboutWorld(client);
         });
     }
 
@@ -156,15 +172,19 @@ public final class TroupeClient implements ClientModInitializer {
     /** One message of the configuration-phase download (Netty thread, or the render thread for held ones). */
     private static void configMessage(byte[] data, net.fabricmc.fabric.api.networking.v1.PacketSender sender) {
         if (sync == null) {
-            sync = new ClientSync(CACHE, m -> sender.sendPacket(new TroupePayload(m)));
+            ClientSync[] me = new ClientSync[1];
+            sync = me[0] = new ClientSync(CACHE, m -> sender.sendPacket(new TroupePayload(m)),
+                    fetched -> Minecraft.getInstance().execute(() -> {
+                        if (sync == me[0]) configMessage(fetched, sender);
+                    }));
             Minecraft.getInstance().execute(() -> showJoin(null, () -> sync, () -> sender.disconnect(CANCELLED), () -> {}));
         }
         ClientSync s = sync;
         try {
             Manifest done = s.receive(data);
             if (done != null) {
-                Troupe.LOG.info("{} resources ready ({} files downloaded, {} KiB): {}", done.resources().size(),
-                        s.downloadedFiles(), s.downloadedBytes() >> 10, done.resources().keySet());
+                Troupe.LOG.info("{} resources ready ({} files downloaded, {} over HTTP, {} KiB): {}", done.resources().size(),
+                        s.downloadedFiles(), s.httpFiles(), s.downloadedBytes() >> 10, done.resources().keySet());
                 manifest = done;
                 loadingAssets = true;
                 sync = null;
@@ -293,6 +313,36 @@ public final class TroupeClient implements ClientModInitializer {
     }
 
     private static final Path TRUSTED = CACHE.resolveSibling("trusted_servers.txt");
+    private static final Path TRUSTED_WORLDS = CACHE.resolveSibling("trusted_worlds.txt");
+    private static String askedWorld;
+
+    /**
+     * A map that brings resources: once the player is in the world with no screen open, asks whether its scripts
+     * may run (once per visit; "Allow" is remembered by the world's folder name). Until then nothing of it runs.
+     */
+    // ponytail: trust is by folder name; hash the resources if a map swapped in place becomes a concern
+    private static void askAboutWorld(Minecraft client) {
+        String world = Troupe.pendingWorld();
+        if (world == null) {
+            askedWorld = null;
+            return;
+        }
+        if (world.equals(askedWorld) || client.player == null || ClientCompat.screen() != null) return;
+        askedWorld = world;
+        ClientCompat.setScreen(new CardConfirm(ServerApi.id("minecraft:textures/item/writable_book.png"),
+                Component.translatableWithFallback("troupe.world.title", "This world runs scripts"),
+                Component.translatableWithFallback("troupe.world.question",
+                        "This world brings %s resources of its own. Their scripts run in your game and can change this world. Allow them?", Troupe.pendingResources()),
+                Component.translatableWithFallback("troupe.world.allow", "Allow"),
+                Component.translatableWithFallback("troupe.assets.skip", "Not now"), yes -> {
+            ClientCompat.setScreen(null);
+            if (!yes) return;
+            var all = lines(TRUSTED_WORLDS);
+            all.add(world);
+            saveLines(TRUSTED_WORLDS, all);
+            Troupe.allowWorld();
+        }));
+    }
 
     /** Whether joining this server needs the player's word (singleplayer never does). */
     private static boolean mustAsk() {
@@ -332,20 +382,28 @@ public final class TroupeClient implements ClientModInitializer {
     }
 
     private static java.util.Set<String> trustedSet() {
+        return lines(TRUSTED);
+    }
+
+    private static void saveTrusted(java.util.Set<String> all) {
+        saveLines(TRUSTED, all);
+    }
+
+    private static java.util.Set<String> lines(Path file) {
         try {
-            return Files.exists(TRUSTED) ? new java.util.TreeSet<>(Files.readAllLines(TRUSTED, StandardCharsets.UTF_8)) : new java.util.TreeSet<>();
+            return Files.exists(file) ? new java.util.TreeSet<>(Files.readAllLines(file, StandardCharsets.UTF_8)) : new java.util.TreeSet<>();
         } catch (IOException e) {
-            Troupe.LOG.warn("Couldn't read {}", TRUSTED, e);
+            Troupe.LOG.warn("Couldn't read {}", file, e);
             return new java.util.TreeSet<>();
         }
     }
 
-    private static void saveTrusted(java.util.Set<String> all) {
+    private static void saveLines(Path file, java.util.Set<String> all) {
         try {
-            Files.createDirectories(TRUSTED.getParent());
-            Files.write(TRUSTED, all, StandardCharsets.UTF_8);
+            Files.createDirectories(file.getParent());
+            Files.write(file, all, StandardCharsets.UTF_8);
         } catch (IOException e) {
-            Troupe.LOG.warn("Couldn't save {}", TRUSTED, e);
+            Troupe.LOG.warn("Couldn't save {}", file, e);
         }
     }
 

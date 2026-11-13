@@ -59,6 +59,12 @@ final class ClientHud {
     private final ModuleRegistry modules;
     private final Module render;
     private boolean collecting;
+    private Item prompt;
+
+    /** One line under the crosshair (the interact prompt), or null for none. */
+    void prompt(String text) {
+        prompt = text == null ? null : new Item(text, null, 0, 16, 0, 0, 0, 0, 0, 0, 0xFFFFFFFF, ANCHORS.indexOf("center"), true, 1, 0);
+    }
 
     ClientHud(ModuleRegistry modules, ResourceHost host) {
         this.modules = modules;
@@ -216,11 +222,12 @@ final class ClientHud {
                 collecting = false;
             }
         }
-        if (items.isEmpty() && frame.isEmpty()) return;
+        if (items.isEmpty() && frame.isEmpty() && prompt == null) return;
         List<Item> all = new ArrayList<>();
         for (Map<String, Item> mine : items.values()) all.addAll(mine.values());
         all.sort(java.util.Comparator.comparingInt(Item::layer)); // stable: same layer keeps creation order
         all.addAll(frame);
+        if (prompt != null) all.add(prompt);
         Font font = Minecraft.getInstance().font;
         for (Item t : all) {
             boolean isText = t.text() != null;

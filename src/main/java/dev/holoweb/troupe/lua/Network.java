@@ -20,6 +20,12 @@ public interface Network {
     /** Server → clients: a player's state ({@code player} set) or global state; {@code json} null removes the key. */
     void state(String resource, String player, String key, String json);
 
+    /**
+     * Server → one player: state of an entity that player can see; {@code json} null removes the key, {@code key}
+     * null forgets the entity (out of sight).
+     */
+    void entityState(String resource, String player, String entity, String key, String json);
+
     /** Server → clients: the resource stopped, its state is gone. */
     void clear(String resource);
 
@@ -31,6 +37,8 @@ public interface Network {
         }
 
         public void state(String resource, String player, String key, String json) {}
+
+        public void entityState(String resource, String player, String entity, String key, String json) {}
 
         public void clear(String resource) {}
     };

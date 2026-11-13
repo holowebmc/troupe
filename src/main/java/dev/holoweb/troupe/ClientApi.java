@@ -40,6 +40,27 @@ final class ClientApi {
                     return pos;
                 });
 
+        // The entities this client knows about, nearest first: what state.entity(id) and draw.* can point at.
+        modules.global("entities").function("near", a -> {
+            double radius = Math.min(128, a.optNumber(0, 16));
+            Vec3 here = me().position();
+            java.util.List<net.minecraft.world.entity.Entity> found = new java.util.ArrayList<>();
+            for (var e : Minecraft.getInstance().level.entitiesForRendering())
+                if (e != me() && e.position().distanceToSqr(here) <= radius * radius) found.add(e);
+            found.sort(java.util.Comparator.comparingDouble(e -> e.position().distanceToSqr(here)));
+            java.util.List<Object> out = new java.util.ArrayList<>();
+            for (var e : found.subList(0, Math.min(256, found.size()))) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("id", e.getStringUUID());
+                m.put("type", String.valueOf(net.minecraft.core.registries.BuiltInRegistries.ENTITY_TYPE.getKey(e.getType())));
+                m.put("x", e.getX());
+                m.put("y", e.getY());
+                m.put("z", e.getZ());
+                out.add(m);
+            }
+            return out;
+        });
+
         modules.global("chat").function("print", a -> {
             me().sendSystemMessage(Component.literal(a.string(0)));
             return null;

@@ -37,6 +37,18 @@ public final class ResourceHost {
         void done(String error, List<Object> results);
     }
 
+    /** Global state as it reaches a client ({@code json} null: removed), for Troupe's own modules. */
+    @FunctionalInterface
+    public interface StateListener {
+        void changed(String resource, String key, String json);
+    }
+
+    /** A message from the other side meant for Troupe itself (names start with "troupe:"), not for a script. */
+    @FunctionalInterface
+    public interface BuiltinListener {
+        void received(String resource, Peer from, String name, String json);
+    }
+
     @FunctionalInterface
     public interface StateVisitor {
         void visit(String resource, String key, String json);
@@ -49,6 +61,19 @@ public final class ResourceHost {
     private Network network = Network.NONE;
     private UiBackend ui;
     private List<String> javaAllow = List.of();
+    private LuaRuntime.Limits limits = LuaRuntime.Limits.DEFAULT;
+    private final List<java.util.function.BiConsumer<String, String>> faultListeners = new ArrayList<>();
+    /** Live heap after the last GC, as a fraction of the maximum. A field so a test can fake it. */
+    java.util.function.DoubleSupplier heapPressure = ResourceHost::liveHeap;
+    private int ticks;
+    private final List<StateListener> stateListeners = new ArrayList<>();
+    private final List<BuiltinListener> builtinListeners = new ArrayList<>();
+    /**
+     * Stopped for going over a limit, with the generation it had: startAll and apply leave it alone until someone
+     * starts it by name (server) or the server restarts it (client), or it would go over the limit again right away.
+     */
+    private final Map<String, Integer> faulted = new HashMap<>();
+    private String version;
     private final List<java.util.function.Consumer<String>> stopListeners = new ArrayList<>();
     private final List<java.util.function.Consumer<String>> startListeners = new ArrayList<>();
     private Map<String, Entry> available = Map.of();
@@ -58,6 +83,9 @@ public final class ResourceHost {
     // resource → key → json. On the client the player map has a single player, "".
     private final Map<String, Map<String, String>> globalState = new HashMap<>();
     private final Map<String, Map<String, Map<String, String>>> playerState = new HashMap<>();
+    /** resource → entity → key → json. Server: what scripts set. Client: what the server sent about entities in sight. */
+    private final Map<String, Map<String, Map<String, String>>> entityState = new HashMap<>();
+    private java.util.function.Function<String, java.util.Collection<String>> entityWatchers = entity -> List.of();
 
     /** {@code executor} runs tasks on the game thread of this side (module events, callbacks). */
     public ResourceHost(Side side, Executor executor) {
@@ -70,6 +98,10 @@ public final class ResourceHost {
         this.executor = executor;
         this.clock = clock;
         this.modules = new ModuleRegistry(side, executor, () -> running.values().stream().map(Running::runtime).toList());
+        modules.global("json")
+                .function("encode", a -> Json.encode(a.get(0)))
+                .function("decode", a -> Json.decode(a.string(0)));
+        if (side == Side.SERVER) HttpApi.register(modules); // never on the client: it would be the server browsing from the player's PC
     }
 
     public ModuleRegistry modules() {
@@ -104,6 +136,34 @@ public final class ResourceHost {
     /** Built-in modules hear when a resource has started (its main.lua ran up to its first wait). */
     public void onStart(java.util.function.Consumer<String> listener) {
         startListeners.add(listener);
+    }
+
+    /** This build's Troupe version, for resources that ask for a minimum ({@code "troupe"} in resource.json). */
+    public void setVersion(String version) {
+        this.version = version;
+    }
+
+    /** Client: Troupe's own modules follow the global state the server sends (their keys start with "troupe:"). */
+    public void onState(StateListener listener) {
+        stateListeners.add(listener);
+    }
+
+    public void onBuiltin(BuiltinListener listener) {
+        builtinListeners.add(listener);
+    }
+
+    LuaRuntime.Limits limits() {
+        return limits;
+    }
+
+    /** For resources started from now on. */
+    public void setLimits(LuaRuntime.Limits limits) {
+        this.limits = limits;
+    }
+
+    /** Hears {@code (resource, why)} after a resource was stopped for going over a limit. */
+    public void onFault(java.util.function.BiConsumer<String, String> listener) {
+        faultListeners.add(listener);
     }
 
     List<String> javaAllow() {
@@ -141,11 +201,13 @@ public final class ResourceHost {
 
     /** Starts the resource and, first, its dependencies. */
     public void start(String name) throws ResourceException {
+        faulted.remove(name);
         start(name, new ArrayDeque<>());
     }
 
     private void start(String name, Deque<String> chain) throws ResourceException {
         if (running.containsKey(name)) return;
+        if (faulted.containsKey(name)) throw new ResourceException(name + " was stopped for going over a limit");
         Entry entry = available.get(name);
         if (entry == null) throw new ResourceException("unknown resource '" + name + "'");
         if (chain.contains(name)) throw new ResourceException("dependency cycle: " + String.join(" -> ", reversed(chain)) + " -> " + name);
@@ -160,6 +222,8 @@ public final class ResourceHost {
             }
         }
         chain.pop();
+        if (!entry.info().runsOn(version))
+            throw new ResourceException(name + " needs Troupe " + entry.info().minTroupe() + " or later on the " + side.name().toLowerCase() + " (this is " + version + ")");
         for (String mod : entry.info().mods(side))
             if (!modules.has(mod)) throw new ResourceException(name + " needs the module '" + mod + "' on the " + side.name().toLowerCase() + " (a mod is missing)");
 
@@ -196,7 +260,7 @@ public final class ResourceHost {
         if (r == null) return;
         r.runtime().close();
         for (var l : stopListeners) l.accept(name);
-        if (side == Side.SERVER && (globalState.remove(name) != null | playerState.remove(name) != null)) network.clear(name);
+        if (side == Side.SERVER && (globalState.remove(name) != null | playerState.remove(name) != null | entityState.remove(name) != null)) network.clear(name);
         stopped.add(name);
         LuaRuntime.LOG.info("Stopped {} ({})", name, side.name().toLowerCase());
     }
@@ -211,6 +275,7 @@ public final class ResourceHost {
     /** Starts every available resource; one failing doesn't keep the others from starting. */
     public void startAll() {
         for (String name : available.keySet()) {
+            if (faulted.containsKey(name)) continue;
             try {
                 start(name);
             } catch (ResourceException e) {
@@ -239,6 +304,7 @@ public final class ResourceHost {
             if (!entries.containsKey(name) || !serverGenerations.getOrDefault(name, 0).equals(generations.getOrDefault(name, 0))) stop(name);
         generations.clear();
         generations.putAll(serverGenerations);
+        faulted.entrySet().removeIf(e -> !e.getValue().equals(serverGenerations.get(e.getKey())));
         setAvailable(entries);
         startAll();
     }
@@ -282,10 +348,45 @@ public final class ResourceHost {
         return copy;
     }
 
-    /** Every game tick: wakes timers that are due. */
+    /** Every game tick: wakes timers that are due, then stops the resources that went over a limit. */
     public void tick() {
         long now = now();
         for (Running r : List.copyOf(running.values())) r.runtime().tick(now);
+        if (side == Side.CLIENT && ++ticks % 20 == 0) heapGuard();
+        for (Running r : List.copyOf(running.values())) {
+            String why = r.runtime().fault();
+            String name = r.runtime().name();
+            if (why == null || !running.containsKey(name)) continue;
+            LuaRuntime.LOG.error("Stopping {} ({}): it {}", name, side.name().toLowerCase(), why);
+            faulted.put(name, generations.getOrDefault(name, 0));
+            stop(name);
+            for (var l : faultListeners) l.accept(name, why);
+        }
+    }
+
+    /**
+     * Client, once a second: retained memory is the one thing the per-step limits can't see (Cobalt has no heap
+     * accounting), so when the game's heap is nearly full after a GC, the server's script that allocated the most goes.
+     */
+    // ponytail: blames by bytes allocated, not retained; walk the Lua heap per resource if this picks wrong in practice
+    private void heapGuard() {
+        if (heapPressure.getAsDouble() < 0.85) return;
+        running.values().stream().map(Running::runtime)
+                .filter(r -> r.totalAlloc() >= 64L << 20)
+                .max(java.util.Comparator.comparingLong(LuaRuntime::totalAlloc))
+                .ifPresent(r -> r.fault("was the script using the most memory when the game ran out of it"));
+    }
+
+    /** Names scripts can't use for handlers, events or state keys: they are Troupe's own. */
+    public static final String RESERVED = "troupe:";
+
+    private static double liveHeap() {
+        long live = 0;
+        for (var pool : java.lang.management.ManagementFactory.getMemoryPoolMXBeans()) {
+            var usage = pool.getType() == java.lang.management.MemoryType.HEAP ? pool.getCollectionUsage() : null;
+            if (usage != null) live += usage.getUsed();
+        }
+        return (double) live / Runtime.getRuntime().maxMemory();
     }
 
     private LuaRuntime runtime(String resource) {
@@ -302,6 +403,10 @@ public final class ResourceHost {
     // ---- network: what arrives from the other side (via Link)
 
     void receiveEvent(String resource, Peer from, String name, String json) {
+        if (name.startsWith(RESERVED)) {
+            for (BuiltinListener l : builtinListeners) l.received(resource, from, name, json);
+            return;
+        }
         LuaRuntime r = runtime(resource);
         if (r != null) r.net.receiveEvent(from, name, json);
     }
@@ -318,6 +423,7 @@ public final class ResourceHost {
                 : playerState.computeIfAbsent(resource, k -> new HashMap<>()).computeIfAbsent("", k -> new HashMap<>());
         if (json == null) map.remove(key);
         else map.put(key, json);
+        if (global) for (StateListener l : stateListeners) l.changed(resource, key, json);
         LuaRuntime r = runtime(resource);
         if (r != null) r.net.stateChanged(global, key, json);
     }
@@ -326,10 +432,79 @@ public final class ResourceHost {
     void receiveClear(String resource) {
         Map<String, String> global = globalState.remove(resource);
         Map<String, Map<String, String>> players = playerState.remove(resource);
+        if (global != null) for (String key : global.keySet()) for (StateListener l : stateListeners) l.changed(resource, key, null);
+        Map<String, Map<String, String>> entities = entityState.remove(resource);
         LuaRuntime r = runtime(resource);
         if (r == null) return;
+        if (entities != null) entities.forEach((entity, map) -> map.keySet().forEach(key -> r.net.entityStateChanged(entity, key, null)));
         if (global != null) for (String key : global.keySet()) r.net.stateChanged(true, key, null);
         if (players != null && players.containsKey("")) for (String key : players.get("").keySet()) r.net.stateChanged(false, key, null);
+    }
+
+    // ---- state of entities, replicated to who can see them
+
+    /** Server: who an entity's state goes to: the players tracking it, and itself when it is a player. */
+    public void setEntityWatchers(java.util.function.Function<String, java.util.Collection<String>> watchers) {
+        entityWatchers = watchers;
+    }
+
+    String getEntityState(String resource, String entity, String key) {
+        Map<String, String> map = entityState.getOrDefault(resource, Map.of()).get(entity);
+        return map == null ? null : map.get(key);
+    }
+
+    /** Server: stores and sends to who sees the entity. {@code json} null removes. */
+    void setEntityState(String resource, String entity, String key, String json) {
+        Map<String, Map<String, String>> byEntity = entityState.computeIfAbsent(resource, k -> new HashMap<>());
+        if (json == null) {
+            Map<String, String> map = byEntity.get(entity);
+            if (map == null || map.remove(key) == null) return;
+            if (map.isEmpty()) byEntity.remove(entity);
+        } else {
+            byEntity.computeIfAbsent(entity, k -> new HashMap<>()).put(key, json);
+        }
+        for (String player : entityWatchers.apply(entity)) network.entityState(resource, player, entity, key, json);
+    }
+
+    /** Server: {@code player} started seeing {@code entity}. */
+    public void showEntity(String entity, String player) {
+        entityState.forEach((resource, byEntity) -> {
+            Map<String, String> map = byEntity.get(entity);
+            if (map != null) map.forEach((key, json) -> network.entityState(resource, player, entity, key, json));
+        });
+    }
+
+    /** Server: {@code player} just got their link; send what they already see. */
+    void showEntities(String player) {
+        java.util.Set<String> entities = new java.util.HashSet<>();
+        for (Map<String, Map<String, String>> byEntity : entityState.values()) entities.addAll(byEntity.keySet());
+        for (String entity : entities) if (entityWatchers.apply(entity).contains(player)) showEntity(entity, player);
+    }
+
+    /** Server: {@code player} stopped seeing {@code entity}. */
+    public void hideEntity(String entity, String player) {
+        entityState.forEach((resource, byEntity) -> {
+            if (byEntity.containsKey(entity)) network.entityState(resource, player, entity, null, null);
+        });
+    }
+
+    /** Server: the entity is gone for good (died, was removed, or was a player who left). */
+    public void entityGone(String entity) {
+        for (Map<String, Map<String, String>> byEntity : entityState.values()) byEntity.remove(entity);
+    }
+
+    /** Client: the server's word about an entity in sight ({@code key} null: out of sight, forget it). */
+    void receiveEntityState(String resource, String entity, String key, String json) {
+        Map<String, Map<String, String>> byEntity = entityState.computeIfAbsent(resource, k -> new HashMap<>());
+        LuaRuntime r = runtime(resource);
+        if (key == null) {
+            Map<String, String> gone = byEntity.remove(entity);
+            if (gone != null && r != null) for (String k : gone.keySet()) r.net.entityStateChanged(entity, k, null);
+            return;
+        }
+        if (json == null) byEntity.getOrDefault(entity, new HashMap<>()).remove(key);
+        else byEntity.computeIfAbsent(entity, k -> new HashMap<>()).put(key, json);
+        if (r != null) r.net.entityStateChanged(entity, key, json);
     }
 
     // ---- replicated state
@@ -342,7 +517,7 @@ public final class ResourceHost {
     }
 
     /** Server: stores and sends to the player (or everyone, for global state). {@code json} null removes. */
-    void setState(String resource, String player, String key, String json) {
+    public void setState(String resource, String player, String key, String json) {
         Map<String, String> map = player == null ? globalState.computeIfAbsent(resource, k -> new HashMap<>())
                 : playerState.computeIfAbsent(resource, k -> new HashMap<>()).computeIfAbsent(player, k -> new HashMap<>());
         if (json == null) map.remove(key);
@@ -357,6 +532,7 @@ public final class ResourceHost {
     /** Server: the player left; their state goes with them. */
     public void playerLeft(String playerId) {
         for (Map<String, Map<String, String>> byPlayer : playerState.values()) byPlayer.remove(playerId);
+        entityGone(playerId);
         for (Running r : running.values()) r.runtime().net.playerLeft(playerId);
     }
 
@@ -364,6 +540,8 @@ public final class ResourceHost {
     public void resetState() {
         globalState.clear();
         playerState.clear();
+        entityState.clear();
         generations.clear();
+        faulted.clear();
     }
 }
