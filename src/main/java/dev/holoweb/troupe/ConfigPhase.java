@@ -36,7 +36,7 @@ final class ConfigPhase {
 
         ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
             ServerResources current = published.get();
-            configured.put(handler.getOwner().id(), current);
+            configured.put(Compat.id(handler.getOwner()), current);
             if (current.manifest().resources().isEmpty()) return;
             if (!ServerConfigurationNetworking.canSend(handler, TroupePayload.TYPE)) {
                 handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));

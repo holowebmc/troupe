@@ -6,10 +6,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
-//? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-//?} else
-/*import net.minecraft.client.gui.GuiGraphics;*/
 
 /**
  * A Troupe window: a centered card (icon, title, a muted line, divider, body) with its buttons under it. The card is
@@ -140,9 +137,31 @@ abstract class CardScreen extends Screen {
         var tip = tooltipAt(mouseX, mouseY);
         if (tip != null) g.setComponentTooltipForNextFrame(font, tip, mouseX, mouseY);
     }
-    //?} else {
+    //?} else if >=1.21.6 {
     /*@Override
-    public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
+    public void renderBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
+        super.renderBackground(g, mouseX, mouseY, delta);
+        drawCard(Panel.canvas(g, font));
+        var tip = tooltipAt(mouseX, mouseY);
+        if (tip != null) g.setComponentTooltipForNextFrame(font, tip, mouseX, mouseY);
+    }
+    *///?} else if >=1.20.2 {
+    /*/^* The screen draws its background itself, then the widgets: the tooltip waits for those. *^/
+    @Override
+    public void renderBackground(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
+        super.renderBackground(g, mouseX, mouseY, delta);
+        drawCard(Panel.canvas(g, font));
+    }
+
+    @Override
+    public void render(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
+        super.render(g, mouseX, mouseY, delta);
+        var tip = tooltipAt(mouseX, mouseY);
+        if (tip != null) g.renderComponentTooltip(font, tip, mouseX, mouseY);
+    }
+    *///?} else {
+    /*@Override
+    public void render(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
         if (dirt()) renderDirtBackground(g);
         else renderBackground(g);
         drawCard(Panel.canvas(g, font));

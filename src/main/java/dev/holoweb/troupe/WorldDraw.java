@@ -222,15 +222,25 @@ final class WorldDraw {
                 {{x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}}};
     }
 
+    //? if >=1.21.9 {
+    /**
+     * {@code LevelRenderEvents.COLLECT_SUBMITS} ({@code WorldRenderEvents.BEFORE_ENTITIES} before 26.1): everything
+     * goes through the frame's submit collector.
+     */
     //? if >=26.1 {
-    /** {@code LevelRenderEvents.COLLECT_SUBMITS}: everything goes through the frame's submit collector. */
     void render(net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext ctx) {
         var camState = ctx.levelState().cameraRenderState;
+        PoseStack ps = ctx.poseStack();
+        var collector = ctx.submitNodeCollector();
+    //?} else {
+    /*void render(net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext ctx) {
+        var camState = ctx.worldState().cameraRenderState;
+        PoseStack ps = ctx.matrices();
+        var collector = ctx.commandQueue();
+    *///?}
         Vec3 cam = camState.pos;
         List<Shape> shapes = collect(cam);
         if (shapes.isEmpty()) return;
-        PoseStack ps = ctx.poseStack();
-        var collector = ctx.submitNodeCollector();
         collector.submitCustomGeometry(ps, net.minecraft.client.renderer.rendertype.RenderTypes.lines(), (pose, vc) -> {
             for (Shape s : shapes) {
                 if (s instanceof Line l) line(pose, vc, sub(l.a(), cam), sub(l.b(), cam), l.color(), l.width());
@@ -239,20 +249,20 @@ final class WorldDraw {
         });
         collector.submitCustomGeometry(ps, net.minecraft.client.renderer.rendertype.RenderTypes.debugQuads(), (pose, vc) -> {
             for (Shape s : shapes) if (s instanceof Box b && b.fill())
-                for (double[][] f : faces(b, cam)) for (double[] p : f) vc.addVertex(pose, (float) p[0], (float) p[1], (float) p[2]).setColor(r(b.color()), g(b.color()), b(b.color()), a(b.color()));
+                for (double[][] f : faces(b, cam)) for (double[] p : f) corner(pose, vc, p, b.color());
         });
         Font font = Minecraft.getInstance().font;
         for (Shape s : shapes) {
             if (s instanceof Board bd) {
                 ps.pushPose();
                 ps.translate(bd.pos().x - cam.x, bd.pos().y - cam.y, bd.pos().z - cam.z);
-                ps.rotate(camState.orientation);
+                turn(ps, camState.orientation);
                 collector.submitCustomGeometry(ps, net.minecraft.client.renderer.rendertype.RenderTypes.text(bd.texture()), (pose, vc) -> board(pose, vc, bd));
                 ps.popPose();
             } else if (s instanceof Label lb) {
                 ps.pushPose();
                 ps.translate(lb.pos().x - cam.x, lb.pos().y - cam.y, lb.pos().z - cam.z);
-                ps.rotate(camState.orientation);
+                turn(ps, camState.orientation);
                 ps.scale(0.025f * lb.scale(), -0.025f * lb.scale(), 0.025f * lb.scale());
                 var seq = net.minecraft.util.FormattedCharSequence.forward(lb.text(), net.minecraft.network.chat.Style.EMPTY);
                 collector.submitText(ps, -font.width(seq) / 2f, 0, seq, false,
@@ -260,26 +270,6 @@ final class WorldDraw {
                 ps.popPose();
             }
         }
-    }
-
-    private static void line(PoseStack.Pose pose, VertexConsumer vc, double[] p, double[] q, int color, float width) {
-        float nx = (float) (q[0] - p[0]), ny = (float) (q[1] - p[1]), nz = (float) (q[2] - p[2]);
-        float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-        if (len == 0) return;
-        nx /= len;
-        ny /= len;
-        nz /= len;
-        vc.addVertex(pose, (float) p[0], (float) p[1], (float) p[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz).setLineWidth(width);
-        vc.addVertex(pose, (float) q[0], (float) q[1], (float) q[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz).setLineWidth(width);
-    }
-
-    private static void board(PoseStack.Pose pose, VertexConsumer vc, Board bd) {
-        float s = bd.size() / 2;
-        int c = bd.color();
-        vc.addVertex(pose, -s, s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(0, 0).setLight(FULL_BRIGHT);
-        vc.addVertex(pose, -s, -s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(0, 1).setLight(FULL_BRIGHT);
-        vc.addVertex(pose, s, -s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(1, 1).setLight(FULL_BRIGHT);
-        vc.addVertex(pose, s, s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(1, 0).setLight(FULL_BRIGHT);
     }
     //?} else {
     /*/^* {@code WorldRenderEvents.AFTER_ENTITIES}: drawn right away through the frame's buffers. *^/
@@ -293,27 +283,26 @@ final class WorldDraw {
         PoseStack.Pose pose = ps.last();
         VertexConsumer lines = buffers.getBuffer(net.minecraft.client.renderer.RenderType.lines());
         for (Shape s : shapes) {
-            if (s instanceof Line l) line(pose, lines, sub(l.a(), cam), sub(l.b(), cam), l.color());
-            else if (s instanceof Box b && !b.fill()) edges(b, cam, (p, q) -> line(pose, lines, p, q, b.color()));
+            if (s instanceof Line l) line(pose, lines, sub(l.a(), cam), sub(l.b(), cam), l.color(), l.width());
+            else if (s instanceof Box b && !b.fill()) edges(b, cam, (p, q) -> line(pose, lines, p, q, b.color(), 2));
         }
         VertexConsumer quads = buffers.getBuffer(net.minecraft.client.renderer.RenderType.debugQuads());
         for (Shape s : shapes) if (s instanceof Box b && b.fill())
-            for (double[][] f : faces(b, cam)) for (double[] p : f)
-                quads.vertex(pose.pose(), (float) p[0], (float) p[1], (float) p[2]).color(r(b.color()), g(b.color()), b(b.color()), a(b.color())).endVertex();
+            for (double[][] f : faces(b, cam)) for (double[] p : f) corner(pose, quads, p, b.color());
         Font font = Minecraft.getInstance().font;
         for (Shape s : shapes) {
             if (s instanceof Board bd) {
                 ps.pushPose();
                 ps.translate(bd.pos().x - cam.x, bd.pos().y - cam.y, bd.pos().z - cam.z);
                 ps.mulPose(camera.rotation());
-                ps.scale(-1, 1, 1); // the old camera's local X points left
+                ps.scale(MIRROR, 1, 1);
                 board(ps.last(), buffers.getBuffer(net.minecraft.client.renderer.RenderType.text(bd.texture())), bd);
                 ps.popPose();
             } else if (s instanceof Label lb) {
                 ps.pushPose();
                 ps.translate(lb.pos().x - cam.x, lb.pos().y - cam.y, lb.pos().z - cam.z);
                 ps.mulPose(camera.rotation());
-                ps.scale(-0.025f * lb.scale(), -0.025f * lb.scale(), 0.025f * lb.scale());
+                ps.scale(MIRROR * 0.025f * lb.scale(), -0.025f * lb.scale(), 0.025f * lb.scale());
                 font.drawInBatch(lb.text(), -font.width(lb.text()) / 2f, 0, lb.color(), false, ps.last().pose(), buffers,
                         lb.seeThrough() ? Font.DisplayMode.SEE_THROUGH : Font.DisplayMode.NORMAL, lb.background(), FULL_BRIGHT);
                 ps.popPose();
@@ -321,27 +310,64 @@ final class WorldDraw {
         }
         if (buffers instanceof net.minecraft.client.renderer.MultiBufferSource.BufferSource bs) bs.endBatch();
     }
+    *///?}
 
-    private static void line(PoseStack.Pose pose, VertexConsumer vc, double[] p, double[] q, int color) {
+    /** Before 1.20.5 the camera looks down +Z with +X to its left: what faces it is mirrored back. */
+    //? if >=1.20.5 {
+    private static final float MIRROR = 1;
+    //?} else
+    /*private static final float MIRROR = -1;*/
+
+    /** {@code width}: per line from 1.21.11; before, the game draws every line at its own fixed width. */
+    private static void line(PoseStack.Pose pose, VertexConsumer vc, double[] p, double[] q, int color, float width) {
         float nx = (float) (q[0] - p[0]), ny = (float) (q[1] - p[1]), nz = (float) (q[2] - p[2]);
         float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
         if (len == 0) return;
         nx /= len;
         ny /= len;
         nz /= len;
-        vc.vertex(pose.pose(), (float) p[0], (float) p[1], (float) p[2]).color(r(color), g(color), b(color), a(color)).normal(pose.normal(), nx, ny, nz).endVertex();
+        //? if >=1.21.11 {
+        vc.addVertex(pose, (float) p[0], (float) p[1], (float) p[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz).setLineWidth(width);
+        vc.addVertex(pose, (float) q[0], (float) q[1], (float) q[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz).setLineWidth(width);
+        //?} else if >=1.21 {
+        /*vc.addVertex(pose, (float) p[0], (float) p[1], (float) p[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz);
+        vc.addVertex(pose, (float) q[0], (float) q[1], (float) q[2]).setColor(r(color), g(color), b(color), a(color)).setNormal(pose, nx, ny, nz);
+        *///?} else {
+        /*vc.vertex(pose.pose(), (float) p[0], (float) p[1], (float) p[2]).color(r(color), g(color), b(color), a(color)).normal(pose.normal(), nx, ny, nz).endVertex();
         vc.vertex(pose.pose(), (float) q[0], (float) q[1], (float) q[2]).color(r(color), g(color), b(color), a(color)).normal(pose.normal(), nx, ny, nz).endVertex();
+        *///?}
+    }
+
+    private static void turn(PoseStack ps, org.joml.Quaternionf q) {
+        //? if >=26.2 {
+        ps.rotate(q);
+        //?} else
+        /*ps.mulPose(q);*/
+    }
+
+    /** One corner of a filled face. */
+    private static void corner(PoseStack.Pose pose, VertexConsumer vc, double[] p, int c) {
+        //? if >=1.21 {
+        vc.addVertex(pose, (float) p[0], (float) p[1], (float) p[2]).setColor(r(c), g(c), b(c), a(c));
+        //?} else
+        /*vc.vertex(pose.pose(), (float) p[0], (float) p[1], (float) p[2]).color(r(c), g(c), b(c), a(c)).endVertex();*/
     }
 
     private static void board(PoseStack.Pose pose, VertexConsumer vc, Board bd) {
         float s = bd.size() / 2;
         int c = bd.color();
-        vc.vertex(pose.pose(), -s, s, 0).color(r(c), g(c), b(c), a(c)).uv(0, 0).uv2(FULL_BRIGHT).endVertex();
+        //? if >=1.21 {
+        vc.addVertex(pose, -s, s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(0, 0).setLight(FULL_BRIGHT);
+        vc.addVertex(pose, -s, -s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(0, 1).setLight(FULL_BRIGHT);
+        vc.addVertex(pose, s, -s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(1, 1).setLight(FULL_BRIGHT);
+        vc.addVertex(pose, s, s, 0).setColor(r(c), g(c), b(c), a(c)).setUv(1, 0).setLight(FULL_BRIGHT);
+        //?} else {
+        /*vc.vertex(pose.pose(), -s, s, 0).color(r(c), g(c), b(c), a(c)).uv(0, 0).uv2(FULL_BRIGHT).endVertex();
         vc.vertex(pose.pose(), -s, -s, 0).color(r(c), g(c), b(c), a(c)).uv(0, 1).uv2(FULL_BRIGHT).endVertex();
         vc.vertex(pose.pose(), s, -s, 0).color(r(c), g(c), b(c), a(c)).uv(1, 1).uv2(FULL_BRIGHT).endVertex();
         vc.vertex(pose.pose(), s, s, 0).color(r(c), g(c), b(c), a(c)).uv(1, 0).uv2(FULL_BRIGHT).endVertex();
+        *///?}
     }
-    *///?}
 
     private static double[] sub(Vec3 p, Vec3 cam) {
         return new double[]{p.x - cam.x, p.y - cam.y, p.z - cam.z};

@@ -28,7 +28,30 @@ public abstract class GameRendererMixin {
         var post = RenderFx.post;
         if (post != null) getRequestedPostEffects().add(post);
     }
-    //?} else {
+    //?} else if >=1.21.2 {
+    /*@Shadow
+    abstract void setPostEffect(net.minecraft.resources.Identifier id);
+
+    @Shadow
+    public abstract void clearPostEffect();
+
+    private net.minecraft.resources.Identifier troupe$applied;
+
+    /^* One post effect at a time ({@code post_effect/<name>.json}), switched when ours changes. *^/
+    @Inject(method = "render", at = @At("HEAD"))
+    private void troupe$post(CallbackInfo ci) {
+        var want = RenderFx.post;
+        if (java.util.Objects.equals(want, troupe$applied)) return;
+        troupe$applied = want;
+        if (want == null) clearPostEffect();
+        else setPostEffect(want);
+    }
+
+    @Inject(method = "getFov", at = @At("RETURN"), cancellable = true)
+    private void troupe$fov(CallbackInfoReturnable<Float> cir) {
+        if (RenderFx.fov != 1) cir.setReturnValue(cir.getReturnValue() * RenderFx.fov);
+    }
+    *///?} else {
     /*@Shadow
     abstract void loadEffect(net.minecraft.resources.Identifier id);
 
@@ -44,7 +67,7 @@ public abstract class GameRendererMixin {
         if (java.util.Objects.equals(want, troupe$applied)) return;
         troupe$applied = want;
         if (want == null) shutdownEffect();
-        else loadEffect(new net.minecraft.resources.Identifier(want.getNamespace(), "shaders/post/" + want.getPath() + ".json"));
+        else loadEffect(net.minecraft.resources.Identifier.tryParse(want.getNamespace() + ":shaders/post/" + want.getPath() + ".json"));
     }
 
     @Inject(method = "getFov", at = @At("RETURN"), cancellable = true)

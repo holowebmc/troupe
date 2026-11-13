@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-First release, for Minecraft 1.20.1 and 26.3.
+First release, for Minecraft 1.20–1.20.1, 1.21–1.21.1, 1.21.11 and 26.3.
 
 - Resources live on the server (`resources/<name>/` with `server/`, `client/`, `shared/`, `ui/`, `assets/`). Clients download the client side on join, into an encrypted cache, and run it.
 - Lua on both sides, one sandboxed state per resource: `net` (validated handlers, calls that wait), replicated `state`, `timer`, exports between resources, automatic cleanup on stop, restart with players connected.

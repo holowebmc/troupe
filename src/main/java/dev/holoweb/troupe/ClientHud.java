@@ -23,10 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
-//? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-//?} else
-/*import net.minecraft.client.gui.GuiGraphics;*/
 
 /**
  * Client extras, without Vitrine (the prelude has nothing to add):
@@ -84,9 +81,12 @@ final class ClientHud {
                 .function("toast", a -> {
                     Component title = Component.literal(a.string(0)), text = a.get(1) == null ? null : Component.literal(a.string(1));
                     //? if >=26.1 {
-                    SystemToast.add(Minecraft.getInstance().gui.toastManager(), SystemToast.SystemToastId.PERIODIC_NOTIFICATION, title, text);
-                    //?} else
-                    /*SystemToast.add(Minecraft.getInstance().getToasts(), SystemToast.SystemToastIds.PERIODIC_NOTIFICATION, title, text);*/
+                    var toasts = Minecraft.getInstance().gui.toastManager();
+                    //?} else if >=1.21.2 {
+                    /*var toasts = Minecraft.getInstance().getToastManager();
+                    *///?} else
+                    /*var toasts = Minecraft.getInstance().getToasts();*/
+                    SystemToast.add(toasts, SystemToast.SystemToastId.PERIODIC_NOTIFICATION, title, text);
                     return null;
                 });
 
@@ -205,10 +205,7 @@ final class ClientHud {
         return out;
     }
 
-    //? if >=26.1 {
     void draw(GuiGraphicsExtractor g) {
-    //?} else
-    /*void draw(GuiGraphics g) {*/
         int w = g.guiWidth(), h = g.guiHeight();
         frame.clear();
         if (modules.listens(render, "hud")) {
@@ -241,35 +238,37 @@ final class ClientHud {
         }
     }
 
-    //? if >=26.1 {
     private static void text(GuiGraphicsExtractor g, Font font, Item t, int x, int y) {
+        //? if >=1.21.6 {
         g.pose().pushMatrix();
         g.pose().translate(x, y);
         g.pose().scale(t.scale(), t.scale());
+        //?} else {
+        /*g.pose().pushPose();
+        g.pose().translate(x, y, 0);
+        g.pose().scale(t.scale(), t.scale(), 1);
+        *///?}
+        //? if >=26.1 {
         g.text(font, t.text(), 0, 0, t.color(), t.shadow());
+        //?} else
+        /*g.drawString(font, t.text(), 0, 0, t.color(), t.shadow());*/
+        //? if >=1.21.6 {
         g.pose().popMatrix();
+        //?} else
+        /*g.pose().popPose();*/
     }
 
     private static void image(GuiGraphicsExtractor g, Item t, int x, int y) {
+        //? if >=1.21.6 {
         g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, t.texture(), x, y, t.u(), t.v(), t.w(), t.h(), t.texW(), t.texH(), t.color());
-    }
-    //?} else {
-    /*private static void text(GuiGraphics g, Font font, Item t, int x, int y) {
-        g.pose().pushPose();
-        g.pose().translate(x, y, 0);
-        g.pose().scale(t.scale(), t.scale(), 1);
-        g.drawString(font, t.text(), 0, 0, t.color(), t.shadow());
-        g.pose().popPose();
-    }
-
-    private static void image(GuiGraphics g, Item t, int x, int y) {
-        int c = t.color();
+        //?} else {
+        /*int c = t.color();
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
         com.mojang.blaze3d.systems.RenderSystem.setShaderColor((c >> 16 & 0xFF) / 255f, (c >> 8 & 0xFF) / 255f, (c & 0xFF) / 255f, (c >>> 24) / 255f);
         g.blit(t.texture(), x, y, t.u(), t.v(), t.w(), t.h(), t.texW(), t.texH());
         com.mojang.blaze3d.systems.RenderSystem.setShaderColor(1, 1, 1, 1);
+        *///?}
     }
-    *///?}
 
     private static double number(Map<String, Object> o, String key, double fallback) {
         Object v = o.get(key);

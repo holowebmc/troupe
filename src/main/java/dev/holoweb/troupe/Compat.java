@@ -22,6 +22,13 @@ final class Compat {
         /*return profile.getName();*/
     }
 
+    static java.util.UUID id(GameProfile profile) {
+        //? if >=1.21.9 {
+        return profile.id();
+        //?} else
+        /*return profile.getId();*/
+    }
+
     static ServerLevel level(ServerPlayer p) {
         //? if >=1.21.6 {
         return p.level();

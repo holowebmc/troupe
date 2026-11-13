@@ -5,10 +5,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.FormattedCharSequence;
 
-//? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-//?} else
-/*import net.minecraft.client.gui.GuiGraphics;*/
 
 /** The look shared by Troupe's windows ({@link CardScreen}): a dark card with an accent stripe. */
 final class Panel {
@@ -36,7 +33,6 @@ final class Panel {
         Font font();
     }
 
-    //? if >=26.1 {
     static Canvas canvas(GuiGraphicsExtractor g, Font font) {
         return new Canvas() {
             public void fill(int x0, int y0, int x1, int y1, int argb) {
@@ -44,47 +40,33 @@ final class Panel {
             }
 
             public void text(FormattedCharSequence text, int x, int y, int argb) {
+                //? if >=26.1 {
                 g.text(font, text, x, y, argb, false);
+                //?} else
+                /*g.drawString(font, text, x, y, argb, false);*/
             }
 
             public void text(Component text, float x, float y, int argb, float scale) {
+                //? if >=1.21.6 {
                 g.pose().pushMatrix();
                 g.pose().translate(x, y);
                 g.pose().scale(scale, scale);
-                g.text(font, text, 0, 0, argb, false);
+                text(text, 0, 0, argb);
                 g.pose().popMatrix();
-            }
-
-            public void icon(Identifier texture, int x, int y, int size) {
-                g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, texture, x, y, 0, 0, size, size, size, size);
-            }
-
-            public Font font() {
-                return font;
-            }
-        };
-    }
-    //?} else {
-    /*static Canvas canvas(GuiGraphics g, Font font) {
-        return new Canvas() {
-            public void fill(int x0, int y0, int x1, int y1, int argb) {
-                g.fill(x0, y0, x1, y1, argb);
-            }
-
-            public void text(FormattedCharSequence text, int x, int y, int argb) {
-                g.drawString(font, text, x, y, argb, false);
-            }
-
-            public void text(Component text, float x, float y, int argb, float scale) {
-                g.pose().pushPose();
+                //?} else {
+                /*g.pose().pushPose();
                 g.pose().translate(x, y, 0);
                 g.pose().scale(scale, scale, 1);
-                g.drawString(font, text, 0, 0, argb, false);
+                text(text, 0, 0, argb);
                 g.pose().popPose();
+                *///?}
             }
 
             public void icon(Identifier texture, int x, int y, int size) {
-                g.blit(texture, x, y, 0, 0, size, size, size, size);
+                //? if >=1.21.6 {
+                g.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, texture, x, y, 0, 0, size, size, size, size);
+                //?} else
+                /*g.blit(texture, x, y, 0, 0, size, size, size, size);*/
             }
 
             public Font font() {
@@ -92,7 +74,6 @@ final class Panel {
             }
         };
     }
-    *///?}
 
     /** Card at (x, y): background, hairline edge, accent stripe on top. */
     static void card(Canvas c, int x, int y, int w, int h, int accent) {

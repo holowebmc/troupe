@@ -143,13 +143,12 @@ public final class TroupeClient implements ClientModInitializer {
         /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
         RenderFx.register(host.modules(), host);
         host.setVersion(Troupe.VERSION);
-        host.onFault((name, why) -> {
-            var player = Minecraft.getInstance().player;
-            if (player != null) player.sendSystemMessage(net.minecraft.network.chat.Component.translatable("troupe.fault", name));
-        });
+        host.onFault((name, why) -> ClientCompat.chat(net.minecraft.network.chat.Component.translatable("troupe.fault", name)));
         //? if >=26.1 {
         net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents.COLLECT_SUBMITS.register(world::render);
-        //?} else
+        //?} else if >=1.21.9 {
+        /*net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents.BEFORE_ENTITIES.register(world::render);
+        *///?} else
         /*net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents.AFTER_ENTITIES.register(world::render);*/
         //? if >=1.21.6 {
         net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
@@ -157,8 +156,7 @@ public final class TroupeClient implements ClientModInitializer {
         //?} else
         /*net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((gui, delta) -> hud.draw(gui));*/
         Troupe.worldAllowed = world -> lines(TRUSTED_WORLDS).contains(world);
-        ClientKeys.init();
-        keys = new ClientKeys(host.modules(), host, CACHE.resolveSibling("keys.json"));
+        ClientKeys.init();        keys = new ClientKeys(host.modules(), host, CACHE.resolveSibling("keys.json"));
         interact = new ClientInteract(host, hud);
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             api.tick();

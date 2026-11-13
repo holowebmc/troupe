@@ -14,7 +14,7 @@ plugins {
 // One subproject per Minecraft version, like Vitrine. The source in git is written for 26.3.
 stonecutter {
     create(rootProject) {
-        versions("1.20.1", "26.3")
+        versions("1.20.1", "1.21.1", "1.21.11", "26.3")
         vcsVersion = "26.3"
     }
 }

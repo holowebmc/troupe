@@ -547,7 +547,7 @@ public final class Troupe implements ModInitializer {
             public void send(byte[] message, Runnable onSent) {
                 TroupePayload payload = new TroupePayload(message);
                 if (onSent == null) packets.sendPacket(payload);
-                //? if >=1.20.5 {
+                //? if >=1.21.6 {
                 else packets.sendPacket(payload, future -> {
                     if (future.isSuccess()) onSent.run();
                 });

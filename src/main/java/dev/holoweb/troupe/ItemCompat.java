@@ -13,8 +13,7 @@ import java.util.Map;
 /**
  * Item details scripts read and write: {@code {name, lore = {...}, enchantments = {['minecraft:sharpness'] = 3},
  * damage, model}}. NBT before 1.20.5, data components after; {@code model} is CustomModelData (an integer before
- * 1.21.4, the first float after). The {@code //? if} boundaries were checked on 1.20.1 and 26.3 only.
- */
+ * 1.21.4, the first float after). */
 final class ItemCompat {
     private ItemCompat() {}
 
@@ -84,7 +83,10 @@ final class ItemCompat {
     static String customId(ItemStack s) {
         var data = s.get(net.minecraft.core.component.DataComponents.CUSTOM_DATA);
         if (data == null) return null;
+        //? if >=1.21.5 {
         String id = data.copyTag().getStringOr(CUSTOM_ID, "");
+        //?} else
+        /*String id = data.copyTag().getString(CUSTOM_ID);*/
         return id.isEmpty() ? null : id;
     }
 
@@ -172,7 +174,16 @@ final class ItemCompat {
         var cmd = s.get(net.minecraft.core.component.DataComponents.CUSTOM_MODEL_DATA);
         return cmd == null || cmd.floats().isEmpty() ? null : Math.round(cmd.floats().get(0));
     }
-    //?} else {
+    //?} else if >=1.20.5 {
+    /*private static void setModel(ItemStack s, int model) {
+        s.set(net.minecraft.core.component.DataComponents.CUSTOM_MODEL_DATA, new net.minecraft.world.item.component.CustomModelData(model));
+    }
+
+    private static Integer model(ItemStack s) {
+        var cmd = s.get(net.minecraft.core.component.DataComponents.CUSTOM_MODEL_DATA);
+        return cmd == null ? null : cmd.value();
+    }
+    *///?} else {
     /*private static void setModel(ItemStack s, int model) {
         s.getOrCreateTag().putInt("CustomModelData", model);
     }

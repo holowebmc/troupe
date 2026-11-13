@@ -14,9 +14,16 @@ stonecutter.replacements {
         regex(below(since)) { replace("\\b$new\\b", old, "\\b$old\\b", new) }
 
     renameWord("1.21.11", "Identifier", "ResourceLocation")
-    // Fabric API took Mojang's "level" names in 26.1
+    renameWord("1.20.3", "SystemToastId", "SystemToastIds")
+    renameWord("26.1", "GuiGraphicsExtractor", "GuiGraphics")
+    // Fabric API took Mojang's "level" and "clientbound" names in 26.1
     renameWord("26.1", "ServerEntityLevelChangeEvents", "ServerEntityWorldChangeEvents")
     renameWord("26.1", "AFTER_PLAYER_CHANGE_LEVEL", "AFTER_PLAYER_CHANGE_WORLD")
+    renameWord("26.1", "clientboundConfiguration", "configurationS2C")
+    renameWord("26.1", "serverboundConfiguration", "configurationC2S")
+    renameWord("26.1", "clientboundPlay", "playS2C")
+    renameWord("26.1", "serverboundPlay", "playC2S")
+    renameWord("26.1", "packetListener", "networkHandler")
 }
 
 version = "${property("mod.version")}+${stonecutter.current.version}"
@@ -50,7 +57,9 @@ dependencies {
     // UI (client only). Not bundled: players install Vitrine; without it, ui.* errors and the rest works.
     mod("implementation")("dev.holoweb:vitrine:${property("deps.vitrine")}+${property("minecraft")}")
     // Permission nodes (LuckPerms and friends answer through it); 7 classes, shipped inside our jar.
-    mod("implementation")("me.lucko:fabric-permissions-api:${property("deps.permissions")}")
+    // Not transitive: it brings a Fabric API platform of the game version it was built on, which drags that
+    // version's modules into the dev runs of older ones (0.3.3 on 1.21.1 loaded 1.21.3's and didn't start).
+    mod("implementation")("me.lucko:fabric-permissions-api:${property("deps.permissions")}") { isTransitive = false }
     "include"("me.lucko:fabric-permissions-api:${property("deps.permissions")}")
     mod("implementation")("net.fabricmc:fabric-loader:${property("deps.fabric_loader")}")
     mod("implementation")("net.fabricmc.fabric-api:fabric-api:${property("deps.fabric_api")}")
@@ -84,6 +93,7 @@ extensions.configure<ModrinthExtension> {
     dependencies {
         required.project("fabric-api")
         optional.project("holoweb-vitrine") // clients need it for ui.*; launchers offer it with Troupe
+        embedded.project("fabric-permissions-api") // inside the jar; Cobalt and sqlite-jdbc aren't Modrinth projects
     }
     debugMode = project.hasProperty("modrinthDry")
 }

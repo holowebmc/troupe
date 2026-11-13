@@ -62,7 +62,8 @@ final class ClientApi {
         });
 
         modules.global("chat").function("print", a -> {
-            me().sendSystemMessage(Component.literal(a.string(0)));
+            me();
+            ClientCompat.chat(Component.literal(a.string(0)));
             return null;
         });
 

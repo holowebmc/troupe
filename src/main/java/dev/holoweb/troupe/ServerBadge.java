@@ -8,12 +8,7 @@ import net.minecraft.network.chat.Component;
 
 import java.util.Map;
 
-//? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-//?} else {
-/*import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
-*///?}
 
 /**
  * A small "✔ troupe" chip after the server's name in the multiplayer list when its ping says it runs Troupe ("✖", red,
@@ -56,7 +51,6 @@ public final class ServerBadge {
         Panel.Chip.status(LABEL, compatible, hover).draw(c, s[0], s[1]);
     }
 
-    //? if >=26.1 {
     /** {@code x, y}: the row's content corner, where the 32×32 icon starts. */
     public static void draw(GuiGraphicsExtractor g, ServerData server, int x, int y, int width, int mouseX, int mouseY) {
         Font font = Minecraft.getInstance().font;
@@ -64,18 +58,14 @@ public final class ServerBadge {
         if (s == null) return;
         boolean hover = over(s, mouseX, mouseY);
         chip(Panel.canvas(g, font), s, infos.get(server).compatible(), hover);
-        if (hover) g.setTooltipForNextFrame(HINT, mouseX, mouseY);
+        if (!hover) return;
+        //? if >=1.21.6 {
+        g.setTooltipForNextFrame(HINT, mouseX, mouseY);
+        //?} else if >=1.20.2 {
+        /*ClientCompat.screen().setTooltipForNextRenderPass(HINT);
+        *///?} else
+        /*if (ClientCompat.screen() instanceof net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen list) list.setToolTip(java.util.List.of(HINT));*/
     }
-    //?} else {
-    /*public static void draw(GuiGraphics g, JoinMultiplayerScreen screen, ServerData server, int x, int y, int width, int mouseX, int mouseY) {
-        Font font = Minecraft.getInstance().font;
-        int[] s = spot(server, font, x, y, width);
-        if (s == null) return;
-        boolean hover = over(s, mouseX, mouseY);
-        chip(Panel.canvas(g, font), s, infos.get(server).compatible(), hover);
-        if (hover) screen.setToolTip(java.util.List.of(HINT));
-    }
-    *///?}
 
     /** A click on the server's row: on the chip, opens the details (and the row ignores the click). */
     public static boolean click(ServerData server, double mouseX, double mouseY) {

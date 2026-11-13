@@ -11,8 +11,20 @@ final class ClientCompat {
     static boolean keyDown(int code) {
         //? if >=26.2 {
         return InputConstants.isKeyDown(code);
-        //?} else
+        //?} else if >=1.21.9 {
+        /*return InputConstants.isKeyDown(Minecraft.getInstance().getWindow(), code);
+        *///?} else
         /*return InputConstants.isKeyDown(Minecraft.getInstance().getWindow().getWindow(), code);*/
+    }
+
+    /** A line in the player's own chat. */
+    static void chat(net.minecraft.network.chat.Component message) {
+        var player = Minecraft.getInstance().player;
+        if (player == null) return;
+        //? if >=26.1 || <1.21.2 {
+        player.sendSystemMessage(message);
+        //?} else
+        /*player.displayClientMessage(message, false);*/
     }
 
     static Screen screen() {

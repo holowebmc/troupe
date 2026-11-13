@@ -12,6 +12,8 @@ Troupe is a Fabric mod that lets a Minecraft server run its own scripts and inte
 - Install Troupe and Fabric API. Install [Vitrine](https://github.com/holowebmc/vitrine) too to see the servers' interfaces (Windows x64 for now); without it everything else works.
 - The first time you join a server that runs scripts, Troupe asks before downloading anything. Servers with Troupe show a badge in the server list.
 - Scripts can draw on your screen and in the world, move the camera and open pages. They can't read or change your files, run Java, or reach the network. A script that uses too much time or memory is stopped.
+- What Troupe connects to: the server you joined. Two things can reach other addresses, both chosen by that server: its files may come from a web address it names (a plain HTTP download, checked against the hashes the server sent), and its interface pages are web pages, which can load content from the internet like any site (only with Vitrine installed).
+- Minecraft 1.20–1.20.1, 1.21–1.21.1, 1.21.11 and 26.3, one jar for each.
 
 ## For server owners
 

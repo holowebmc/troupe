@@ -10,10 +10,7 @@ import net.minecraft.server.packs.resources.ReloadInstance;
 import java.util.Optional;
 import java.util.function.Consumer;
 
-//? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
-//?} else
-/*import net.minecraft.client.gui.GuiGraphics;*/
 
 /**
  * A resource reload without the Mojang screen: when Troupe's asset packs go on or off (joining, leaving), the open
@@ -63,7 +60,7 @@ public final class QuietOverlay extends LoadingOverlay {
         /*mc.setOverlay(null);*/
         Screen screen = ClientCompat.screen();
         int w = mc.getWindow().getGuiScaledWidth(), h = mc.getWindow().getGuiScaledHeight();
-        //? if >=26.1 {
+        //? if >=1.21.9 {
         if (screen != null) screen.init(w, h);
         //?} else
         /*if (screen != null) screen.init(mc, w, h);*/
@@ -81,9 +78,16 @@ public final class QuietOverlay extends LoadingOverlay {
         Screen screen = ClientCompat.screen();
         if (screen != null) screen.extractRenderStateWithTooltipAndSubtitles(g, mouseX, mouseY, delta);
     }
-    //?} else {
+    //?} else if >=1.21.9 {
     /*@Override
-    public void render(GuiGraphics g, int mouseX, int mouseY, float delta) {
+    public void render(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
+        Screen screen = ClientCompat.screen();
+        if (screen != null) screen.renderWithTooltipAndSubtitles(g, mouseX, mouseY, delta);
+        check();
+    }
+    *///?} else {
+    /*@Override
+    public void render(GuiGraphicsExtractor g, int mouseX, int mouseY, float delta) {
         Screen screen = ClientCompat.screen();
         if (screen != null) screen.renderWithTooltip(g, mouseX, mouseY, delta);
         check();
