@@ -123,6 +123,7 @@ final class GameApi {
             String ref = com.google.gson.JsonParser.parseString(model).getAsJsonObject().get("model").getAsString();
             com.google.gson.JsonObject j = new com.google.gson.JsonObject();
             j.addProperty("name", BbModel.load(host, ref).animation(a.string(1), ref).name());
+            j.addProperty("tick", e.level().getGameTime()); // clients count from here: all in step, late viewers join mid-way
             host.setEntityState(a.resource(), id, ANIM, j.toString());
             return null;
         });

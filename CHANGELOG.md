@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Blockbench models: put a `.bbmodel` in a resource's `models/` and dress any entity or player with it (`entity:set_model('npc', { idle, walk })`, `entity:animate('wave')`), or place one in the world on a client (`draw.model`). Textures and animations come from the project file; nothing to export.
+- Blockbench models: put a `.bbmodel` in a resource's `models/` and dress any entity or player with it (`entity:set_model('npc', { idle, walk })`, `entity:animate('wave')`), or place one in the world on a client (`draw.model`). Textures and animations come from the project file; nothing to export. Cubes (per-face or box UV) and meshes; linear, catmull-rom, bezier and step keyframes, with simple Molang. Animations follow the game clock, so every player sees the same frame. Dressed entities keep their name tag and a shadow.
 
 ## 0.1.0
 

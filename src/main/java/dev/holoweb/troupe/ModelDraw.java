@@ -13,13 +13,16 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -30,19 +33,71 @@ import java.util.UUID;
 
 /**
  * Blockbench models on the client: on entities the server dressed ({@code entity:set_model}, which arrives as entity
- * state) in place of the game's own renderer ({@code EntityRenderDispatcherMixin} hides the entity), and the props
- * of {@code draw.model}. Textures are uploaded once per model version and released when a resource stops.
+ * state) in place of the game's own renderer ({@code EntityRenderDispatcherMixin} hides the entity, so its name tag
+ * and shadow are drawn here), and the props of {@code draw.model}. Textures are uploaded once per model version and
+ * released when a resource stops. Animations run on the game's clock, which the server keeps in step on every client:
+ * everyone sees the same frame, and who comes into view mid-animation joins it there.
  */
 public final class ModelDraw {
     private static final Logger LOG = LoggerFactory.getLogger("troupe");
-    private static final double MAX_DISTANCE = 128;
-    private static final int MAX_QUADS = 100_000;
+    private static final double MAX_DISTANCE = 128, NAME_DISTANCE = 64, SHADOW_DISTANCE = 48;
+    /** Half the angle of the view cone kept: wider than any field of view the game allows, so only what's well off screen goes. */
+    private static final double CONE_COS = Math.cos(Math.toRadians(80));
+    private static final int MAX_VERTICES = 400_000, FULL_BRIGHT = 0xF000F0;
+    static final Identifier SHADOW = ServerApi.id("minecraft:textures/misc/shadow.png");
 
-    /** A prop from {@code draw.model}: {@code ref} is {@code resource:name}. */
-    record Prop(String ref, Vec3 pos, float yaw, float scale, String animation, long since) {}
+    /** A prop from {@code draw.model}: {@code ref} is {@code resource:name}; {@code tick}: game time it (re)started. */
+    record Prop(String ref, Vec3 pos, float yaw, float scale, String animation, long tick) {}
 
-    /** One face ready to write: 4 × (x, y, z, u, v) relative to the camera, its normal, light and overlay. */
-    record Quad(float[] v, float nx, float ny, float nz, int light, int overlay) {}
+    /**
+     * The vertices to write for one texture this frame: x, y, z, u, v, nx, ny, nz and light, overlay, color each.
+     * Kept from frame to frame, so drawing allocates nothing once they're big enough.
+     */
+    static final class Mesh {
+        float[] f = new float[1024 * 8];
+        int[] i = new int[1024 * 3];
+        int count;
+
+        void add(float x, float y, float z, float u, float v, float nx, float ny, float nz, int light, int overlay, int color) {
+            if (count * 8 == f.length) {
+                f = Arrays.copyOf(f, f.length * 2);
+                i = Arrays.copyOf(i, i.length * 2);
+            }
+            int a = count * 8, b = count * 3;
+            f[a] = x;
+            f[a + 1] = y;
+            f[a + 2] = z;
+            f[a + 3] = u;
+            f[a + 4] = v;
+            f[a + 5] = nx;
+            f[a + 6] = ny;
+            f[a + 7] = nz;
+            i[b] = light;
+            i[b + 1] = overlay;
+            i[b + 2] = color;
+            count++;
+        }
+
+        void write(PoseStack.Pose pose, VertexConsumer vc) {
+            for (int k = 0; k < count; k++) {
+                int a = k * 8, b = k * 3, c = i[b + 2];
+                //? if >=1.21 {
+                vc.addVertex(pose, f[a], f[a + 1], f[a + 2]).setColor(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF, c >>> 24).setUv(f[a + 3], f[a + 4])
+                        .setOverlay(i[b + 1]).setLight(i[b]).setNormal(pose, f[a + 5], f[a + 6], f[a + 7]);
+                //?} else
+                /*vc.vertex(pose.pose(), f[a], f[a + 1], f[a + 2]).color(c >> 16 & 0xFF, c >> 8 & 0xFF, c & 0xFF, c >>> 24).uv(f[a + 3], f[a + 4]).overlayCoords(i[b + 1]).uv2(i[b]).normal(pose.normal(), f[a + 5], f[a + 6], f[a + 7]).endVertex();*/
+            }
+        }
+    }
+
+    /** One frame: model faces by texture (cutout), shadows (translucent), and name tags for the label pass. */
+    record Frame(Map<Identifier, Mesh> meshes, Mesh shadows, List<WorldDraw.Label> names) {
+        boolean empty() {
+            if (shadows.count > 0 || !names.isEmpty()) return false;
+            for (Mesh m : meshes.values()) if (m.count > 0) return false;
+            return true;
+        }
+    }
 
     private record Uploaded(BbModel model, Identifier[] textures) {}
 
@@ -51,7 +106,7 @@ public final class ModelDraw {
         final String resource;
         String model, idle, walk, animation;
         float scale = 1;
-        long since;
+        long tick;
         boolean broken;
 
         Dress(String resource) {
@@ -62,7 +117,10 @@ public final class ModelDraw {
     private static final Map<UUID, Dress> dressed = new HashMap<>();
     private final ResourceHost host;
     private final Map<String, Uploaded> uploaded = new HashMap<>();
+    private final Map<Identifier, Mesh> meshes = new LinkedHashMap<>();
+    private final Mesh shadows = new Mesh();
     private final Set<String> warned = new HashSet<>();
+    private final Matrix4f root = new Matrix4f();
     private int next;
 
     ModelDraw(ResourceHost host) {
@@ -83,9 +141,14 @@ public final class ModelDraw {
 
     void clear() {
         dressed.clear();
-        uploaded.values().forEach(ModelDraw::release);
+        uploaded.values().forEach(this::release);
         uploaded.clear();
         warned.clear();
+    }
+
+    private static long gameTime() {
+        var level = Minecraft.getInstance().level;
+        return level == null ? 0 : level.getGameTime();
     }
 
     private void entityState(String resource, String entity, String key, String json) {
@@ -116,7 +179,7 @@ public final class ModelDraw {
                 d.broken = get(d.model) == null;
             } else {
                 d.animation = o.get("name").getAsString();
-                d.since = System.nanoTime();
+                d.tick = o.has("tick") ? o.get("tick").getAsLong() : gameTime();
             }
         } catch (RuntimeException e) {
             dressed.remove(id);
@@ -151,8 +214,11 @@ public final class ModelDraw {
         return u;
     }
 
-    private static void release(Uploaded u) {
-        for (Identifier id : u.textures()) Minecraft.getInstance().getTextureManager().release(id);
+    private void release(Uploaded u) {
+        for (Identifier id : u.textures()) {
+            Minecraft.getInstance().getTextureManager().release(id);
+            meshes.remove(id);
+        }
     }
 
     /** Checks a model and an animation for {@code draw.model}, so a script hears about a typo right away. */
@@ -163,67 +229,97 @@ public final class ModelDraw {
 
     // ---- drawing
 
-    /** Everything to draw this frame, by texture. */
-    Map<Identifier, List<Quad>> collect(Vec3 cam, List<Prop> props) {
-        Map<Identifier, List<Quad>> out = new LinkedHashMap<>();
+    /** Everything to draw this frame. {@code forward}: where the camera looks. */
+    Frame collect(Vec3 cam, Vector3f forward, List<Prop> props) {
+        for (Mesh m : meshes.values()) m.count = 0;
+        shadows.count = 0;
+        List<WorldDraw.Label> names = new ArrayList<>();
+        Frame frame = new Frame(meshes, shadows, names);
         var mc = Minecraft.getInstance();
-        if (mc.level == null || dressed.isEmpty() && props.isEmpty()) return out;
+        if (mc.level == null || dressed.isEmpty() && props.isEmpty()) return frame;
         float partial = ClientCompat.partialTick();
-        double now = System.nanoTime() / 1e9;
-        int[] quads = {0};
+        long ticks = mc.level.getGameTime();
         for (Prop p : props) {
             Uploaded u = get(p.ref());
-            if (u == null) continue;
+            if (u == null || !visible(p.pos(), cam, forward, u.model().radius * p.scale())) continue;
             BbModel.Animation a = p.animation() == null ? null : u.model().animations.get(p.animation());
-            float t = a == null ? 0 : a.at(now - p.since() / 1e9);
-            Matrix4f root = new Matrix4f().translate((float) (p.pos().x - cam.x), (float) (p.pos().y - cam.y), (float) (p.pos().z - cam.z))
-                    .rotateY((float) Math.toRadians(180 - p.yaw())).scale(p.scale());
-            add(out, u, t < 0 ? null : a, Math.max(t, 0), root, ClientCompat.light(mc.level, BlockPos.containing(p.pos())), OverlayTexture.NO_OVERLAY, quads);
+            float t = a == null ? 0 : a.at((ticks - p.tick() + partial) / 20.0);
+            pose(u, p.pos(), cam, p.yaw(), p.scale(), t < 0 ? null : a, Math.max(t, 0),
+                    // lit from half its height, as the game lights entities from their eyes: the feet can be in the ground
+                    ClientCompat.light(mc.level, BlockPos.containing(p.pos().add(0, u.model().top * p.scale() / 2, 0))), OverlayTexture.NO_OVERLAY);
         }
-        if (dressed.isEmpty()) return out;
+        if (dressed.isEmpty()) return frame;
+        Entity camera = mc.getCameraEntity();
         boolean firstPerson = !ClientCompat.cameraDetached();
         for (Entity e : mc.level.entitiesForRendering()) {
             Dress d = dressed.get(e.getUUID());
-            if (d == null || d.model == null || d.broken || firstPerson && e == mc.getCameraEntity()) continue;
+            if (d == null || d.model == null || d.broken || firstPerson && e == camera || mc.player != null && e.isInvisibleTo(mc.player)) continue;
             Vec3 pos = e.getPosition(partial);
-            if (pos.distanceTo(cam) > MAX_DISTANCE) continue;
             Uploaded u = get(d.model);
             if (u == null) continue;
+            BbModel m = u.model();
+            if (!visible(pos, cam, forward, m.radius * d.scale * 1.5f + e.getBbHeight())) continue; // animations reach past the rest pose
             // an animation the server asked for plays over idle / walk until it ends
-            BbModel.Animation a = d.animation == null ? null : u.model().animations.get(d.animation);
-            float t = a == null ? -1 : a.at(now - d.since / 1e9);
+            BbModel.Animation a = d.animation == null ? null : m.animations.get(d.animation);
+            float t = a == null ? -1 : a.at((ticks - d.tick + partial) / 20.0);
             if (t < 0) {
-                d.animation = null;
                 double dx = e.getX() - e.xo, dz = e.getZ() - e.zo;
                 String auto = dx * dx + dz * dz > 1e-4 && d.walk != null ? d.walk : d.idle;
-                a = auto == null ? null : u.model().animations.get(auto);
-                t = a == null ? 0 : Math.max(0, a.at(now));
+                a = auto == null ? null : m.animations.get(auto);
+                t = a == null ? 0 : Math.max(0, a.at((ticks + partial) / 20.0));
             }
             float yaw = e instanceof LivingEntity l ? Mth.rotLerp(partial, l.yBodyRotO, l.yBodyRot) : Mth.rotLerp(partial, e.yRotO, e.getYRot());
-            Matrix4f root = new Matrix4f().translate((float) (pos.x - cam.x), (float) (pos.y - cam.y), (float) (pos.z - cam.z))
-                    .rotateY((float) Math.toRadians(180 - yaw)).scale(d.scale);
             boolean hurt = e instanceof LivingEntity l && (l.hurtTime > 0 || l.deathTime > 0);
-            add(out, u, a, t, root, mc.getEntityRenderDispatcher().getPackedLightCoords(e, partial),
-                    hurt ? OverlayTexture.pack(OverlayTexture.u(0), OverlayTexture.v(true)) : OverlayTexture.NO_OVERLAY, quads);
+            pose(u, pos, cam, yaw, d.scale, a, t, mc.getEntityRenderDispatcher().getPackedLightCoords(e, partial),
+                    hurt ? OverlayTexture.pack(OverlayTexture.u(0), OverlayTexture.v(true)) : OverlayTexture.NO_OVERLAY);
+            double dist = pos.distanceTo(cam);
+            // onGround() isn't synced for mobs that never moved: look for ground under the feet instead
+            if (dist < SHADOW_DISTANCE && !mc.level.isEmptyBlock(BlockPos.containing(pos.x, pos.y - 0.05, pos.z))) shadow(pos, cam, Math.max(0.25f, Math.min(3, m.width * d.scale)), (float) (1 - dist / SHADOW_DISTANCE));
+            if (e != camera && dist < NAME_DISTANCE && (e.isCustomNameVisible() || e.hasCustomName() && e == mc.crosshairPickEntity || e instanceof Player))
+                name(names, e, pos.add(0, Math.max(m.top * d.scale, e.getBbHeight()) + 0.5, 0));
         }
-        return out;
+        return frame;
     }
 
-    private static void add(Map<Identifier, List<Quad>> out, Uploaded u, BbModel.Animation a, float t, Matrix4f root, int light, int overlay, int[] count) {
-        u.model().mesh(a, t, root, (texture, corners, nx, ny, nz) -> {
-            if (++count[0] > MAX_QUADS) return;
-            out.computeIfAbsent(u.textures()[texture], k -> new ArrayList<>()).add(new Quad(corners, nx, ny, nz, light, overlay));
+    /** Within reach, and not well off screen (a cone around the view, the model as a sphere of {@code radius}). */
+    private static boolean visible(Vec3 pos, Vec3 cam, Vector3f forward, float radius) {
+        double dx = pos.x - cam.x, dy = pos.y - cam.y, dz = pos.z - cam.z;
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist > MAX_DISTANCE + radius) return false;
+        return dist <= radius || dx * forward.x + dy * forward.y + dz * forward.z >= dist * CONE_COS - radius;
+    }
+
+    private void pose(Uploaded u, Vec3 pos, Vec3 cam, float yaw, float scale, BbModel.Animation a, float t, int light, int overlay) {
+        root.translation((float) (pos.x - cam.x), (float) (pos.y - cam.y), (float) (pos.z - cam.z)).rotateY((float) Math.toRadians(180 - yaw)).scale(scale);
+        Mesh[] target = new Mesh[u.textures().length];
+        for (int i = 0; i < target.length; i++) target[i] = meshes.computeIfAbsent(u.textures()[i], k -> new Mesh());
+        int[] budget = {MAX_VERTICES - total()};
+        u.model().mesh(a, t, root, (texture, x, y, z, uu, vv, nx, ny, nz) -> {
+            if (--budget[0] >= 0) target[texture].add(x, y, z, uu, vv, nx, ny, nz, light, overlay, 0xFFFFFFFF);
         });
     }
 
-    static void quad(PoseStack.Pose pose, VertexConsumer vc, Quad q) {
-        float[] v = q.v();
-        for (int i = 0; i < 20; i += 5) {
-            //? if >=1.21 {
-            vc.addVertex(pose, v[i], v[i + 1], v[i + 2]).setColor(255, 255, 255, 255).setUv(v[i + 3], v[i + 4])
-                    .setOverlay(q.overlay()).setLight(q.light()).setNormal(pose, q.nx(), q.ny(), q.nz());
-            //?} else
-            /*vc.vertex(pose.pose(), v[i], v[i + 1], v[i + 2]).color(255, 255, 255, 255).uv(v[i + 3], v[i + 4]).overlayCoords(q.overlay()).uv2(q.light()).normal(pose.normal(), q.nx(), q.ny(), q.nz()).endVertex();*/
-        }
+    private int total() {
+        int n = 0;
+        for (Mesh m : meshes.values()) n += m.count;
+        return n;
+    }
+
+    /** A soft dark disc under the feet, fading with distance (the game's shadow texture). */
+    private void shadow(Vec3 pos, Vec3 cam, float r, float strength) {
+        float x = (float) (pos.x - cam.x), y = (float) (pos.y - cam.y) + 0.015f, z = (float) (pos.z - cam.z);
+        int color = (int) (0.6f * strength * 255) << 24 | 0xFFFFFF;
+        shadows.add(x - r, y, z - r, 0, 0, 0, 1, 0, FULL_BRIGHT, OverlayTexture.NO_OVERLAY, color);
+        shadows.add(x - r, y, z + r, 0, 1, 0, 1, 0, FULL_BRIGHT, OverlayTexture.NO_OVERLAY, color);
+        shadows.add(x + r, y, z + r, 1, 1, 0, 1, 0, FULL_BRIGHT, OverlayTexture.NO_OVERLAY, color);
+        shadows.add(x + r, y, z - r, 1, 0, 0, 1, 0, FULL_BRIGHT, OverlayTexture.NO_OVERLAY, color);
+    }
+
+    /** Like the game's: faint through walls unless sneaking, plain on top. */
+    private static void name(List<WorldDraw.Label> names, Entity e, Vec3 at) {
+        String text = e.getDisplayName().getString();
+        if (text.isEmpty()) return;
+        if (!e.isDiscrete()) names.add(new WorldDraw.Label(text, at, 0x20FFFFFF, 1, 0x40000000, true, null));
+        names.add(new WorldDraw.Label(text, at, 0xFFFFFFFF, 1, e.isDiscrete() ? 0x40000000 : 0, false, null));
     }
 }

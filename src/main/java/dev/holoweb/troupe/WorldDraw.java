@@ -155,11 +155,12 @@ final class WorldDraw {
         String animation = o.get("animation") == null ? null : String.valueOf(o.get("animation"));
         models.check(ref, animation);
         Map<String, Shape> mine = shapes.get(a.resource());
-        long since = mine != null && mine.get(a.string(0)) instanceof Model m && m.prop().ref().equals(ref)
-                && java.util.Objects.equals(m.prop().animation(), animation) ? m.prop().since() : System.nanoTime();
+        var level = Minecraft.getInstance().level;
+        long tick = mine != null && mine.get(a.string(0)) instanceof Model m && m.prop().ref().equals(ref)
+                && java.util.Objects.equals(m.prop().animation(), animation) ? m.prop().tick() : level == null ? 0 : level.getGameTime();
         double scale = num(o, "scale", 1);
         if (!(scale > 0) || scale > 64) throw new IllegalArgumentException("scale must be 0..64");
-        return new Model(new ModelDraw.Prop(ref, vec(o, "pos"), (float) num(o, "yaw", 0), (float) scale, animation, since), dim(o));
+        return new Model(new ModelDraw.Prop(ref, vec(o, "pos"), (float) num(o, "yaw", 0), (float) scale, animation, tick), dim(o));
     }
 
     private static Vec3 vec(Map<String, Object> o, String key) {
@@ -265,10 +266,12 @@ final class WorldDraw {
     *///?}
         Vec3 cam = camState.pos;
         List<Shape> shapes = collect(cam);
-        var meshes = models.collect(cam, props(shapes));
-        meshes.forEach((texture, quads) -> collector.submitCustomGeometry(ps, cutout(texture), (pose, vc) -> {
-            for (ModelDraw.Quad q : quads) ModelDraw.quad(pose, vc, q);
-        }));
+        var frame = models.collect(cam, new org.joml.Vector3f(0, 0, -1).rotate(camState.orientation), props(shapes));
+        frame.meshes().forEach((texture, mesh) -> {
+            if (mesh.count > 0) collector.submitCustomGeometry(ps, cutout(texture), mesh::write);
+        });
+        if (frame.shadows().count > 0) collector.submitCustomGeometry(ps, translucent(ModelDraw.SHADOW), frame.shadows()::write);
+        shapes.addAll(frame.names());
         if (shapes.isEmpty()) return;
         collector.submitCustomGeometry(ps, net.minecraft.client.renderer.rendertype.RenderTypes.lines(), (pose, vc) -> {
             for (Shape s : shapes) {
@@ -310,12 +313,13 @@ final class WorldDraw {
         PoseStack ps = ctx.matrixStack();
         var buffers = ctx.consumers();
         PoseStack.Pose pose = ps.last();
-        var meshes = models.collect(cam, props(shapes));
-        meshes.forEach((texture, quads) -> {
-            VertexConsumer vc = buffers.getBuffer(cutout(texture));
-            for (ModelDraw.Quad q : quads) ModelDraw.quad(pose, vc, q);
+        var frame = models.collect(cam, new org.joml.Vector3f(camera.getLookVector()), props(shapes));
+        frame.meshes().forEach((texture, mesh) -> {
+            if (mesh.count > 0) mesh.write(pose, buffers.getBuffer(cutout(texture)));
         });
-        if (shapes.isEmpty() && meshes.isEmpty()) return;
+        if (frame.shadows().count > 0) frame.shadows().write(pose, buffers.getBuffer(translucent(ModelDraw.SHADOW)));
+        shapes.addAll(frame.names());
+        if (shapes.isEmpty() && frame.empty()) return;
         VertexConsumer lines = buffers.getBuffer(net.minecraft.client.renderer.RenderType.lines());
         for (Shape s : shapes) {
             if (s instanceof Line l) line(pose, lines, sub(l.a(), cam), sub(l.b(), cam), l.color(), l.width());
@@ -365,6 +369,17 @@ final class WorldDraw {
     *///?} else {
     /*private static net.minecraft.client.renderer.RenderType cutout(Identifier texture) {
         return net.minecraft.client.renderer.RenderType.entityCutoutNoCull(texture);
+    }
+    *///?}
+
+    /** For the shadows under dressed entities. */
+    //? if >=1.21.9 {
+    private static net.minecraft.client.renderer.rendertype.RenderType translucent(Identifier texture) {
+        return net.minecraft.client.renderer.rendertype.RenderTypes.entityTranslucent(texture);
+    }
+    //?} else {
+    /*private static net.minecraft.client.renderer.RenderType translucent(Identifier texture) {
+        return net.minecraft.client.renderer.RenderType.entityTranslucent(texture);
     }
     *///?}
 
