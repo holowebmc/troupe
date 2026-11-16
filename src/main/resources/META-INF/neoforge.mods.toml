@@ -1,0 +1,33 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "Apache-2.0"
+issueTrackerURL = "https://github.com/holowebmc/troupe/issues"
+
+[[mods]]
+modId = "troupe"
+version = "${version}"
+displayName = "Troupe"
+description = "Server resources (Lua + UI) that clients download and run on join."
+logoFile = "assets/troupe/icon.png"
+displayURL = "https://github.com/holowebmc/troupe"
+
+[[mixins]]
+config = "troupe.mixins.json"
+
+[[dependencies.troupe]]
+modId = "neoforge"
+type = "required"
+versionRange = "${loader}"
+side = "BOTH"
+
+[[dependencies.troupe]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft}"
+side = "BOTH"
+
+[[dependencies.troupe]]
+modId = "vitrine"
+type = "optional"
+versionRange = "[0.3.0,)"
+side = "CLIENT"

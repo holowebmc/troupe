@@ -2,25 +2,19 @@ package dev.holoweb.troupe;
 
 import dev.holoweb.troupe.api.Module;
 import dev.holoweb.troupe.lua.ModuleRegistry;
-import net.fabricmc.fabric.api.entity.event.v1.ServerEntityLevelChangeEvents;
-import net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents;
-import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
-import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
-import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
-import net.fabricmc.fabric.api.event.player.UseBlockCallback;
-import net.fabricmc.fabric.api.event.player.UseEntityCallback;
-import net.fabricmc.fabric.api.event.player.UseItemCallback;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -38,7 +32,7 @@ import java.util.Map;
  * Use events fire for the main hand only. Server thread; only players' actions on the server side.
  */
 public final class GameEvents {
-    /** For mixins (block placing has no Fabric event). */
+    /** For the entries and mixins (block placing has no Fabric event). */
     private static GameEvents instance;
 
     private final ModuleRegistry modules;
@@ -50,48 +44,54 @@ public final class GameEvents {
                 .event("use_entity").event("attack").event("damage").event("death").event("respawn").event("dimension");
         entities = modules.global("entities").event("damage").event("death");
         instance = this;
+    }
 
-        PlayerBlockBreakEvents.BEFORE.register((level, player, pos, state, be) ->
-                !(player instanceof ServerPlayer p) || allow(players, "break", ServerApi.peer(p), block(level, pos, state.getBlock())));
+    // Called by the loaders' entries (server side). The boolean ones: false cancels.
 
-        UseBlockCallback.EVENT.register((player, level, hand, hit) -> {
-            if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
-            BlockPos pos = hit.getBlockPos();
-            return allow(players, "use_block", ServerApi.peer(p), block(level, pos, level.getBlockState(pos).getBlock()))
-                    ? InteractionResult.PASS : InteractionResult.FAIL;
-        });
-        //? if >=1.21.2 {
-        UseItemCallback.EVENT.register((player, level, hand) -> {
-            if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
-            return allow(players, "use_item", ServerApi.peer(p), GameApi.item(p.getItemInHand(hand))) ? InteractionResult.PASS : InteractionResult.FAIL;
-        });
-        //?} else {
-        /*UseItemCallback.EVENT.register((player, level, hand) -> {
-            var stack = player.getItemInHand(hand);
-            if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return net.minecraft.world.InteractionResultHolder.pass(stack);
-            return allow(players, "use_item", ServerApi.peer(p), GameApi.item(stack))
-                    ? net.minecraft.world.InteractionResultHolder.pass(stack) : net.minecraft.world.InteractionResultHolder.fail(stack);
-        });
-        *///?}
-        UseEntityCallback.EVENT.register((player, level, hand, entity, hit) -> {
-            if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
-            return allow(players, "use_entity", ServerApi.peer(p), who(entity)) ? InteractionResult.PASS : InteractionResult.FAIL;
-        });
-        AttackEntityCallback.EVENT.register((player, level, hand, entity, hit) -> {
-            if (!(player instanceof ServerPlayer p)) return InteractionResult.PASS;
-            return allow(players, "attack", ServerApi.peer(p), who(entity)) ? InteractionResult.PASS : InteractionResult.FAIL;
-        });
+    static boolean breaking(Level level, Player player, BlockPos pos, BlockState state) {
+        return !(player instanceof ServerPlayer p) || instance.allow(instance.players, "break", ServerApi.peer(p), block(level, pos, state.getBlock()));
+    }
 
-        ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> entity instanceof ServerPlayer p
-                ? allow(players, "damage", ServerApi.peer(p), (double) amount, cause(source))
-                : allow(entities, "damage", GameApi.handle(entity), (double) amount, cause(source)));
-        ServerLivingEntityEvents.AFTER_DEATH.register((entity, source) -> {
-            if (entity instanceof ServerPlayer p) emit(players, "death", ServerApi.peer(p), cause(source));
-            else emit(entities, "death", GameApi.handle(entity), cause(source));
-        });
-        ServerPlayerEvents.AFTER_RESPAWN.register((old, now, alive) -> emit(players, "respawn", ServerApi.peer(now)));
-        ServerEntityLevelChangeEvents.AFTER_PLAYER_CHANGE_LEVEL.register((p, from, to) ->
-                emit(players, "dimension", ServerApi.peer(p), Compat.dimension(from), Compat.dimension(to)));
+    static boolean usingBlock(Player player, Level level, InteractionHand hand, BlockHitResult hit) {
+        if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return true;
+        BlockPos pos = hit.getBlockPos();
+        return instance.allow(instance.players, "use_block", ServerApi.peer(p), block(level, pos, level.getBlockState(pos).getBlock()));
+    }
+
+    static boolean usingItem(Player player, InteractionHand hand) {
+        if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return true;
+        return instance.allow(instance.players, "use_item", ServerApi.peer(p), GameApi.item(p.getItemInHand(hand)));
+    }
+
+    static boolean usingEntity(Player player, InteractionHand hand, Entity entity) {
+        if (!(player instanceof ServerPlayer p) || hand != InteractionHand.MAIN_HAND) return true;
+        return instance.allow(instance.players, "use_entity", ServerApi.peer(p), who(entity));
+    }
+
+    static boolean attacking(Player player, Entity entity) {
+        return !(player instanceof ServerPlayer p) || instance.allow(instance.players, "attack", ServerApi.peer(p), who(entity));
+    }
+
+    static boolean damaging(LivingEntity entity, DamageSource source, float amount) {
+        GameEvents e = instance;
+        return entity instanceof ServerPlayer p
+                ? e.allow(e.players, "damage", ServerApi.peer(p), (double) amount, cause(source))
+                : e.allow(e.entities, "damage", GameApi.handle(entity), (double) amount, cause(source));
+    }
+
+    static void died(LivingEntity entity, DamageSource source) {
+        GameEvents e = instance;
+        if (entity instanceof ServerPlayer p) e.emit(e.players, "death", ServerApi.peer(p), cause(source));
+        else e.emit(e.entities, "death", GameApi.handle(entity), cause(source));
+    }
+
+    static void respawned(ServerPlayer now) {
+        instance.emit(instance.players, "respawn", ServerApi.peer(now));
+    }
+
+    /** {@code from} and {@code to}: dimension ids. */
+    static void changedLevel(ServerPlayer p, String from, String to) {
+        instance.emit(instance.players, "dimension", ServerApi.peer(p), from, to);
     }
 
     /** {@code BlockItemMixin}: false cancels the placing. */

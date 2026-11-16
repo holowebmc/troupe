@@ -37,7 +37,8 @@ final class JavaApi {
             "java.lang.ProcessBuilder", "java.lang.Process", "java.lang.ProcessHandle", "java.lang.System",
             "java.lang.Thread", "java.lang.ThreadGroup", "java.lang.reflect.", "java.lang.invoke.", "java.lang.ref.",
             "java.lang.foreign.", "java.lang.module.", "java.io.", "java.nio.file.", "java.nio.channels.", "java.net.",
-            "sun.", "jdk.", "com.sun.", "net.fabricmc.loader.", "org.spongepowered.");
+            "sun.", "jdk.", "com.sun.", "net.fabricmc.loader.", "org.spongepowered.",
+            "net.neoforged.fml.", "net.neoforged.fancymodloader.", "cpw.mods.");
 
     record Handle(Object object, boolean isClass) {}
 

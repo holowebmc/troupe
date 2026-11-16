@@ -40,14 +40,10 @@ final class ClientKeys {
 
     static KeyMapping interact;
 
-    /** Mod init: the fixed mapping, which also makes the category known to the Controls screen. */
+    /** Mod init: the fixed mapping (the entries register it), which also makes the category known to the Controls screen. */
     static void init() {
         InputConstants.Key g = InputConstants.getKey("key.keyboard.g"); // its own type: the key codes aren't GLFW's on 26.x
         interact = new KeyMapping("key.troupe.interact", g.getType(), g.getValue(), CATEGORY);
-        //? if >=26.1 {
-        net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper.registerKeyMapping(interact);
-        //?} else
-        /*net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper.registerKeyBinding(interact);*/
     }
 
     /** Shows the resource's label in the Controls screen; the name the game indexes it by stays unique. */

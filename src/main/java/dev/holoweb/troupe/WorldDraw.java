@@ -253,17 +253,7 @@ final class WorldDraw {
      * {@code LevelRenderEvents.COLLECT_SUBMITS} ({@code WorldRenderEvents.BEFORE_ENTITIES} before 26.1): everything
      * goes through the frame's submit collector.
      */
-    //? if >=26.1 {
-    void render(net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext ctx) {
-        var camState = ctx.levelState().cameraRenderState;
-        PoseStack ps = ctx.poseStack();
-        var collector = ctx.submitNodeCollector();
-    //?} else {
-    /*void render(net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext ctx) {
-        var camState = ctx.worldState().cameraRenderState;
-        PoseStack ps = ctx.matrices();
-        var collector = ctx.commandQueue();
-    *///?}
+    void render(net.minecraft.client.renderer.state.level.CameraRenderState camState, PoseStack ps, net.minecraft.client.renderer.SubmitNodeCollector collector) {
         Vec3 cam = camState.pos;
         List<Shape> shapes = collect(cam);
         var frame = models.collect(cam, new org.joml.Vector3f(0, 0, -1).rotate(camState.orientation), props(shapes));
@@ -304,14 +294,11 @@ final class WorldDraw {
         }
     }
     //?} else {
-    /*/^* {@code WorldRenderEvents.AFTER_ENTITIES}: drawn right away through the frame's buffers. *^/
-    void render(net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext ctx) {
-        var camera = ctx.camera();
+    /*/^* After the entities ({@code WorldRenderEvents.AFTER_ENTITIES}, NeoForge's stage): drawn right away through the frame's buffers. *^/
+    void render(net.minecraft.client.Camera camera, PoseStack ps, net.minecraft.client.renderer.MultiBufferSource buffers) {
         Vec3 cam = camera.getPosition();
         List<Shape> shapes = collect(cam);
-        if (ctx.consumers() == null) return;
-        PoseStack ps = ctx.matrixStack();
-        var buffers = ctx.consumers();
+        if (buffers == null) return;
         PoseStack.Pose pose = ps.last();
         var frame = models.collect(cam, new org.joml.Vector3f(camera.getLookVector()), props(shapes));
         frame.meshes().forEach((texture, mesh) -> {

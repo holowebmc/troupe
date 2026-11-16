@@ -37,10 +37,14 @@ final class Compat {
     }
 
     static String dimension(net.minecraft.world.level.Level level) {
+        return dimension(level.dimension());
+    }
+
+    static String dimension(net.minecraft.resources.ResourceKey<net.minecraft.world.level.Level> key) {
         //? if >=1.21.11 {
-        return level.dimension().identifier().toString();
+        return key.identifier().toString();
         //?} else
-        /*return level.dimension().location().toString();*/
+        /*return key.location().toString();*/
     }
 
     static boolean teleport(ServerPlayer p, ServerLevel level, double x, double y, double z) {

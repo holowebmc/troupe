@@ -1,6 +1,6 @@
 # Troupe
 
-Troupe is a Fabric mod that lets a Minecraft server run its own scripts and interfaces on its players' clients. Resources live on the server; each one has server code, client code, shared code, UI pages and assets. Clients download the client side when they join and run it in a sandbox.
+Troupe is a Fabric mod (NeoForge 1.21.1 in alpha) that lets a Minecraft server run its own scripts and interfaces on its players' clients. Resources live on the server; each one has server code, client code, shared code, UI pages and assets. Clients download the client side when they join and run it in a sandbox.
 
 - **One folder per resource.** `server/` never leaves the server; `client/`, `shared/`, `ui/`, `assets/` and `models/` go to the players.
 - **Lua on both sides,** with calls between client and server that wait for the answer, replicated state, timers and exports between resources.
@@ -9,7 +9,7 @@ Troupe is a Fabric mod that lets a Minecraft server run its own scripts and inte
 
 ## For players
 
-- Install Troupe and Fabric API. Install [Vitrine](https://github.com/holowebmc/vitrine) too to see the servers' interfaces (Windows x64 for now); without it everything else works.
+- Install Troupe and Fabric API (on NeoForge, Troupe alone). Install [Vitrine](https://github.com/holowebmc/vitrine) too to see the servers' interfaces (Windows x64 for now); without it everything else works.
 - The first time you join a server that runs scripts, Troupe asks before downloading anything. Servers with Troupe show a badge in the server list.
 - Scripts can draw on your screen and in the world, move the camera and open pages. They can't read or change your files, run Java, or reach the network. A script that uses too much time or memory is stopped.
 - What Troupe connects to: the server you joined. Two things can reach other addresses, both chosen by that server: its files may come from a web address it names (a plain HTTP download, checked against the hashes the server sent), and its interface pages are web pages, which can load content from the internet like any site (only with Vitrine installed).
@@ -17,7 +17,7 @@ Troupe is a Fabric mod that lets a Minecraft server run its own scripts and inte
 
 ## For server owners
 
-Put Troupe and Fabric API in `mods/` and resources in `resources/`:
+Put Troupe and Fabric API (on NeoForge, Troupe alone) in `mods/` and resources in `resources/`:
 
 ```
 resources/bank/
@@ -61,7 +61,7 @@ Resources share Lua code too: `require('base:shared.util')` loads `shared/util.l
 
 A resource lists the mod modules it uses in `resource.json` (`"mods": { "client": ["bank >= 1.2", "map?"] }`): a minimum version, or `?` for one it can do without. On the client a script reaches only the modules its server announced, and the player sees which of their mods those are before joining.
 
-Other mods expose their own API to scripts by registering a module (`dev.holoweb.troupe.api`, entrypoint `troupe`); scripts call it with `mods.call` or `mods.get`. A mod can also give scripts its own object types (methods and properties), teach Troupe how its classes convert, add methods to player and entity handles, and register functions the script waits on:
+Other mods expose their own API to scripts by registering a module (`dev.holoweb.troupe.api`, entrypoint `troupe`; on NeoForge a `META-INF/services` entry); scripts call it with `mods.call` or `mods.get`. A mod can also give scripts its own object types (methods and properties), teach Troupe how its classes convert, add methods to player and entity handles, and register functions the script waits on:
 
 ```java
 public class BankTroupe implements TroupeModule {
@@ -85,4 +85,4 @@ public class BankTroupe implements TroupeModule {
 
 ## License
 
-Apache License 2.0. The jar includes [Cobalt](https://github.com/cc-tweaked/Cobalt) (MIT), [fabric-permissions-api](https://github.com/lucko/fabric-permissions-api) (MIT) and [sqlite-jdbc](https://github.com/xerial/sqlite-jdbc) (Apache 2.0).
+Apache License 2.0. The jar includes [Cobalt](https://github.com/cc-tweaked/Cobalt) (MIT), [fabric-permissions-api](https://github.com/lucko/fabric-permissions-api) (MIT, Fabric jars only) and [sqlite-jdbc](https://github.com/xerial/sqlite-jdbc) (Apache 2.0).

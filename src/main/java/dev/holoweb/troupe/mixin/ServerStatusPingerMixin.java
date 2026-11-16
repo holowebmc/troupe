@@ -14,9 +14,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /** The pinger's status listener: hands the ping's troupe info to the server entry it's for. */
 @Mixin(targets = "net.minecraft.client.multiplayer.ServerStatusPinger$1")
 public abstract class ServerStatusPingerMixin {
-    @Shadow
+    // NeoForge recompiles Minecraft with its own parameter names: there the captured field is val$p_105460_ (1.21.1).
+    @Shadow(aliases = "val$p_105460_")
     @Final
-    ServerData val$data;
+    private ServerData val$data;
 
     @Inject(method = "handleStatusResponse", at = @At("HEAD"))
     private void troupe$badge(ClientboundStatusResponsePacket packet, CallbackInfo ci) {

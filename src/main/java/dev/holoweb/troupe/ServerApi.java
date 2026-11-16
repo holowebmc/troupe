@@ -9,7 +9,6 @@ import dev.holoweb.troupe.lua.ModuleRegistry;
 import dev.holoweb.troupe.lua.Peer;
 import dev.holoweb.troupe.lua.ResourceHost;
 import dev.holoweb.troupe.lua.Store;
-import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.core.BlockPos;
@@ -116,7 +115,7 @@ final class ServerApi {
                     ServerLevel level = a.get(4) == null ? Compat.level(p) : level(a.string(4));
                     return Compat.teleport(p, level, a.number(1), a.number(2), a.number(3));
                 })
-                .function("has_permission", a -> me.lucko.fabric.api.permissions.v0.Permissions.check(player(a), node(a.string(1)), 2))
+                .function("has_permission", a -> Loader.permission(player(a), node(a.string(1)), 2))
                 .function("give", a -> player(a).addItem(game.stack(a.get(1), a.get(2), true)))
                 .event("join").event("leave");
 
@@ -134,7 +133,6 @@ final class ServerApi {
                     return null;
                 })
                 .event("message");
-        ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> chat.emit("message", peer(sender), message.signedContent()));
 
         // zone.box / zone.sphere and their objects are in the prelude.
         zone = modules.global("zone")
@@ -226,7 +224,19 @@ final class ServerApi {
         modules.convert(ItemStack.class, GameApi::item);
         host.onStop(game::forget);
         new GameEvents(modules);
-        new ScoreApi(modules, host, this);
+        score = new ScoreApi(modules, host, this);
+    }
+
+    private ScoreApi score;
+
+    /** A chat message from a player ({@code chat.on_message}). */
+    void chat(ServerPlayer sender, String message) {
+        chat.emit("message", peer(sender), message);
+    }
+
+    /** Any play disconnect, joined or not. */
+    void disconnected(ServerPlayer p) {
+        score.left(p);
     }
 
     private final List<ServerPlayer> joining = new java.util.ArrayList<>();
@@ -405,7 +415,7 @@ final class ServerApi {
             return 0;
         }
         if (cmd.admin() && !Compat.permission(src, 2)
-                || cmd.permission() != null && !me.lucko.fabric.api.permissions.v0.Permissions.check(src, cmd.permission(), 2)) {
+                || cmd.permission() != null && !Loader.permission(src, cmd.permission(), 2)) {
             src.sendFailure(Component.literal("You don't have permission to use /" + name));
             return 0;
         }

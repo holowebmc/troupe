@@ -19,7 +19,7 @@ A singleplayer world can carry a `resources/` folder too, so a map can come with
 
 ## For players
 
-- Install Troupe and [Fabric API](https://modrinth.com/mod/fabric-api). Add [Vitrine](https://modrinth.com/mod/holoweb-vitrine) to see the servers' interfaces (Windows x64 for now). Everything else works without it.
+- Install Troupe and [Fabric API](https://modrinth.com/mod/fabric-api) (on NeoForge 1.21.1, in alpha, Troupe alone). Add [Vitrine](https://modrinth.com/mod/holoweb-vitrine) to see the servers' interfaces (Windows x64 for now). Everything else works without it.
 - The first time you join a server that runs scripts, Troupe asks before downloading anything. Servers with Troupe show a badge in the server list, with what they run and the size of the download.
 - Scripts can draw on your screen and in the world, move the camera and open pages. They can't read or change your files, run Java, or reach the network. A script that uses too much time or memory is stopped.
 
@@ -32,7 +32,7 @@ Troupe talks to the server you joined. Two things can reach other addresses, and
 
 ## For server owners
 
-Put Troupe and Fabric API in `mods/`, and your resources in `resources/`:
+Put Troupe and Fabric API (on NeoForge, Troupe alone) in `mods/`, and your resources in `resources/`:
 
 ```
 resources/bank/

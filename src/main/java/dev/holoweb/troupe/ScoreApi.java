@@ -3,7 +3,6 @@ package dev.holoweb.troupe;
 import dev.holoweb.troupe.api.Args;
 import dev.holoweb.troupe.lua.ModuleRegistry;
 import dev.holoweb.troupe.lua.ResourceHost;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundTabListPacket;
 import net.minecraft.server.level.ServerBossEvent;
@@ -157,9 +156,10 @@ final class ScoreApi {
                 return true;
             });
         });
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
-            for (Bar b : bars.values()) b.event().removePlayer(handler.player);
-        });
+    }
+
+    void left(ServerPlayer player) {
+        for (Bar b : bars.values()) b.event().removePlayer(player);
     }
 
     private void clearSidebar(Scoreboard board) {

@@ -3,9 +3,6 @@ package dev.holoweb.troupe;
 //? if >=1.20.5 {
 import dev.holoweb.troupe.net.ServerResources;
 import dev.holoweb.troupe.net.ServerSync;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.server.network.ConfigurationTask;
@@ -21,52 +18,57 @@ import java.util.function.Supplier;
 /**
  * Download during the configuration phase (1.20.2+; here 1.20.5+, with typed payloads): the player waits on the
  * loading screen until every client file is cached. Before that the download happens in play (see {@code Link.push}).
+ * The loaders' entries call {@link #configure}, {@link #receive} and {@link #disconnected}.
  */
-final class ConfigPhase {
+public final class ConfigPhase {
     private static final Map<ServerConfigurationPacketListenerImpl, ServerSync> syncs = new ConcurrentHashMap<>();
+    private static Supplier<ServerResources> published;
+    private static Map<UUID, ServerResources> configured;
+    static final ConfigurationTask.Type TASK = SyncTask.TYPE;
 
     private ConfigPhase() {}
 
     /** {@code configured}: what each player got, so play can push the newer manifest if it changed meanwhile. */
-    static void register(Supplier<ServerResources> published, Map<UUID, ServerResources> configured) {
-        PayloadTypeRegistry.clientboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.serverboundConfiguration().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(TroupePayload.TYPE, TroupePayload.CODEC);
+    static void init(Supplier<ServerResources> published, Map<UUID, ServerResources> configured) {
+        ConfigPhase.published = published;
+        ConfigPhase.configured = configured;
+    }
 
-        ServerConfigurationConnectionEvents.CONFIGURE.register((handler, s) -> {
-            ServerResources current = published.get();
-            configured.put(Compat.id(handler.getOwner()), current);
-            if (current.manifest().resources().isEmpty()) return;
-            if (!ServerConfigurationNetworking.canSend(handler, TroupePayload.TYPE)) {
-                handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
-                return;
+    /** Configuration starts ({@code hasTroupe}: the client listens on our channel): the task to add, or null. */
+    static ConfigurationTask configure(ServerConfigurationPacketListenerImpl handler, boolean hasTroupe, ServerSync.Sender sender) {
+        ServerResources current = published.get();
+        configured.put(Compat.id(handler.getOwner()), current);
+        if (current.manifest().resources().isEmpty()) return null;
+        if (!hasTroupe) {
+            handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
+            return null;
+        }
+        ServerSync sync = new ServerSync(current, sender);
+        syncs.put(handler, sync);
+        return new SyncTask(sync);
+    }
+
+    /**
+     * A Troupe message during configuration. Netty thread (Fabric runs configuration receivers there, unlike play);
+     * {@code done} completes {@link #TASK}, and must hop to the server thread, which owns the task queue.
+     */
+    static void receive(ServerConfigurationPacketListenerImpl handler, byte[] data, Runnable done) {
+        ServerSync sync = syncs.get(handler);
+        if (sync == null) return;
+        try {
+            if (sync.receive(data)) {
+                syncs.remove(handler).close();
+                done.run();
             }
-            ServerSync sync = new ServerSync(current, Troupe.sender(ServerConfigurationNetworking.getSender(handler), handler::disconnect));
-            syncs.put(handler, sync);
-            handler.addTask(new SyncTask(sync));
-        });
+        } catch (IOException e) {
+            Troupe.LOG.warn("Troupe protocol error from {}: {}", Compat.name(handler.getOwner()), e.getMessage());
+            handler.disconnect(Component.literal("Troupe: " + e.getMessage()));
+        }
+    }
 
-        // Fabric runs configuration receivers on the Netty thread (unlike play): the task queue belongs to the server thread.
-        ServerConfigurationNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            ServerConfigurationPacketListenerImpl handler = ctx.packetListener();
-            ServerSync sync = syncs.get(handler);
-            if (sync == null) return;
-            try {
-                if (sync.receive(payload.data())) {
-                    syncs.remove(handler).close();
-                    ctx.server().execute(() -> handler.completeTask(SyncTask.TYPE));
-                }
-            } catch (IOException e) {
-                Troupe.LOG.warn("Troupe protocol error from {}: {}", Compat.name(handler.getOwner()), e.getMessage());
-                handler.disconnect(Component.literal("Troupe: " + e.getMessage()));
-            }
-        });
-
-        ServerConfigurationConnectionEvents.DISCONNECT.register((handler, s) -> {
-            ServerSync sync = syncs.remove(handler);
-            if (sync != null) sync.close();
-        });
+    public static void disconnected(ServerConfigurationPacketListenerImpl handler) {
+        ServerSync sync = syncs.remove(handler);
+        if (sync != null) sync.close();
     }
 
     /** Holds the player in configuration until the client says every file is cached. */
@@ -95,6 +97,6 @@ import java.util.function.Supplier;
 final class ConfigPhase {
     private ConfigPhase() {}
 
-    static void register(Supplier<ServerResources> published, Map<UUID, ServerResources> configured) {}
+    static void init(Supplier<ServerResources> published, Map<UUID, ServerResources> configured) {}
 }
 *///?}

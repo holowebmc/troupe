@@ -13,8 +13,8 @@
 	},
 	"environment": "*",
 	"entrypoints": {
-		"main": ["dev.holoweb.troupe.Troupe"],
-		"client": ["dev.holoweb.troupe.TroupeClient"]
+		"main": ["dev.holoweb.troupe.FabricEntry"],
+		"client": ["dev.holoweb.troupe.FabricClientEntry"]
 	},
 	"mixins": ["troupe.mixins.json"],
 	"depends": {

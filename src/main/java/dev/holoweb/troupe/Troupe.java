@@ -14,14 +14,6 @@ import dev.holoweb.troupe.net.ProtocolException;
 import dev.holoweb.troupe.net.ResourceInfo;
 import dev.holoweb.troupe.net.ServerResources;
 import dev.holoweb.troupe.net.ServerSync;
-import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
-import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
-import net.fabricmc.fabric.api.networking.v1.PacketSender;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
@@ -40,12 +32,12 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Server side (dedicated or integrated): runs the resources in {@code resources/} and sends their client files
- * (during configuration where it exists, see {@link ConfigPhase}; else on join).
+ * (during configuration where it exists, see {@link ConfigPhase}; else on join). Loader-free: FabricEntry and
+ * NeoForgeEntry call these from their events.
  */
-public final class Troupe implements ModInitializer {
+public final class Troupe {
     public static final Logger LOG = LoggerFactory.getLogger("troupe");
-    public static final String VERSION = net.fabricmc.loader.api.FabricLoader.getInstance().getModContainer("troupe")
-            .map(c -> c.getMetadata().getVersion().getFriendlyString()).orElse(null);
+    public static final String VERSION = Loader.version();
 
     private static volatile MinecraftServer server;
     private static final ResourceHost host = new ResourceHost(Side.SERVER, task -> {
@@ -67,120 +59,138 @@ public final class Troupe implements ModInitializer {
     private static final boolean DEV = Boolean.getBoolean("troupe.dev");
     private static Map<String, Long> devStamps;
 
-    @Override
-    public void onInitialize() {
-        ConfigPhase.register(() -> published, configured);
+    /** Mod init, before any event. */
+    static void init() {
+        ConfigPhase.init(() -> published, configured);
         TroupeStatus.serve(() -> published.manifest());
         host.setNetwork(links);
         host.setVersion(VERSION);
         // entity.state / player.public go to who has the entity in sight (the game's own entity tracking).
         host.setEntityWatchers(Troupe::watchers);
-        net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents.START_TRACKING.register(
-                (entity, player) -> host.showEntity(entity.getStringUUID(), player.getStringUUID()));
-        net.fabricmc.fabric.api.networking.v1.EntityTrackingEvents.STOP_TRACKING.register(
-                (entity, player) -> host.hideEntity(entity.getStringUUID(), player.getStringUUID()));
-        net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.ENTITY_UNLOAD.register((entity, level) -> {
-            var reason = entity.getRemovalReason();
-            if (reason == null || !reason.shouldDestroy()) return;
-            host.entityGone(entity.getStringUUID());
-            Instances.forget(entity.getUUID());
-        });
         host.onFault((name, why) -> publish()); // connected clients stop it too
         registerModules(host.modules());
+    }
 
-        ServerLifecycleEvents.SERVER_STARTING.register(s -> {
-            server = s;
-            config = readConfig();
-            host.setJavaAllow(javaAllow());
-            startDownloads();
-            openDatabase(s);
-            rescan(s);
-        });
-        ServerLifecycleEvents.SERVER_STARTED.register(s -> {
-            Path world = Compat.worldWithResources(s);
-            String name = world == null ? null : world.getFileName().toString();
-            if (name != null && !resources.infos().isEmpty() && !worldAllowed.test(name)) {
-                pendingWorld = name; // the client asks once the player is in; allowWorld() starts them
-                LOG.info("The world '{}' brings {} resources; waiting for the player to allow its scripts", name, resources.infos().size());
-            } else {
-                host.startAll();
-                publish();
-            }
-            if (DEV) LOG.info("Dev mode: resources restart when their files change");
-        });
-        ServerLifecycleEvents.SERVER_STOPPING.register(s -> {
-            host.stopAll();
-            db.close(); // after the resources: what their on_stop asked for is written first
-        });
-        ServerLifecycleEvents.SERVER_STOPPED.register(s -> {
-            server = null;
-            pendingWorld = null;
-            api.stopped();
-            if (blobServer != null) blobServer.close();
-            blobServer = null;
-        });
-        ServerTickEvents.END_SERVER_TICK.register(s -> {
-            host.tick();
-            api.tick();
-            if (DEV && s.getTickCount() % 20 == 0) devCheck(s);
-        });
-        CommandRegistrationCallback.EVENT.register((dispatcher, context, selection) -> dispatcher.register(command()));
+    static void startTracking(net.minecraft.world.entity.Entity entity, ServerPlayer player) {
+        host.showEntity(entity.getStringUUID(), player.getStringUUID());
+    }
 
-        // Play phase: one Link per player with Troupe. Play receivers run on the server thread.
-        ServerPlayConnectionEvents.JOIN.register((handler, sender, s) -> {
-            ServerPlayer player = handler.player;
-            ServerResources got = configured.remove(player.getUUID());
-            if (ServerPlayNetworking.canSend(player, TroupePayload.TYPE)) {
-                Link link = new Link(host, ServerApi.peer(player), out(player));
-                ServerResources now = published;
-                if (got == null && !now.manifest().resources().isEmpty()) {
-                    // No configuration phase (before 1.20.2): the first download happens in play, and the player
-                    // joins (global state, START, on_join) once it's in, as they would after configuration.
-                    downloading.put(player.getUUID(), link);
-                    link.push(now, () -> {
-                        downloading.remove(player.getUUID());
-                        links.add(link);
-                        if (!published.manifest().equals(now.manifest())) link.push(published);
-                        link.whenHello(() -> api.joined(player));
-                    });
-                    return;
-                }
-                links.add(link);
-                if (!now.manifest().equals((got == null ? ServerResources.EMPTY : got).manifest())) link.push(now);
-                // on_join once the client answered START: by then scripts see its mod modules too
-                link.whenHello(() -> api.joined(player));
-                return;
-            } else if (!published.manifest().resources().isEmpty()) {
-                handler.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
-                return;
-            }
-            api.joined(player); // queued: runs after START went out, so state set by players.on_join reaches the client
-        });
-        ServerPlayConnectionEvents.DISCONNECT.register((handler, s) -> {
-            java.util.UUID uuid = handler.player.getUUID();
-            if (downloading.containsKey(uuid)) { // never joined: no on_leave
-                s.execute(() -> {
-                    Link d = downloading.remove(uuid);
-                    if (d != null) d.close();
+    static void stopTracking(net.minecraft.world.entity.Entity entity, ServerPlayer player) {
+        host.hideEntity(entity.getStringUUID(), player.getStringUUID());
+    }
+
+    /** An entity left a server level: only a removal for good (killed, discarded) forgets it. */
+    static void entityUnloaded(net.minecraft.world.entity.Entity entity) {
+        var reason = entity.getRemovalReason();
+        if (reason == null || !reason.shouldDestroy()) return;
+        host.entityGone(entity.getStringUUID());
+        Instances.forget(entity.getUUID());
+    }
+
+    /** Before the worlds load. */
+    static void starting(MinecraftServer s) {
+        server = s;
+        config = readConfig();
+        host.setJavaAllow(javaAllow());
+        startDownloads();
+        openDatabase(s);
+        rescan(s);
+    }
+
+    static void started(MinecraftServer s) {
+        Path world = Compat.worldWithResources(s);
+        String name = world == null ? null : world.getFileName().toString();
+        if (name != null && !resources.infos().isEmpty() && !worldAllowed.test(name)) {
+            pendingWorld = name; // the client asks once the player is in; allowWorld() starts them
+            LOG.info("The world '{}' brings {} resources; waiting for the player to allow its scripts", name, resources.infos().size());
+        } else {
+            host.startAll();
+            publish();
+        }
+        if (DEV) LOG.info("Dev mode: resources restart when their files change");
+    }
+
+    static void stopping() {
+        host.stopAll();
+        db.close(); // after the resources: what their on_stop asked for is written first
+    }
+
+    static void stopped() {
+        server = null;
+        pendingWorld = null;
+        api.stopped();
+        if (blobServer != null) blobServer.close();
+        blobServer = null;
+    }
+
+    /** End of each server tick. */
+    static void tick(MinecraftServer s) {
+        host.tick();
+        api.tick();
+        if (DEV && s.getTickCount() % 20 == 0) devCheck(s);
+    }
+
+    /** {@code players.on_message}. */
+    static void chat(ServerPlayer sender, String message) {
+        api.chat(sender, message);
+    }
+
+    /**
+     * Play phase: one Link per player with Troupe ({@code hasTroupe}: the client listens on our channel). Server
+     * thread, once the player is in the world.
+     */
+    static void joined(ServerPlayer player, boolean hasTroupe, ServerSync.Sender sender) {
+        ServerResources got = configured.remove(player.getUUID());
+        if (hasTroupe) {
+            Link link = new Link(host, ServerApi.peer(player), out(sender));
+            ServerResources now = published;
+            if (got == null && !now.manifest().resources().isEmpty()) {
+                // No configuration phase (before 1.20.2): the first download happens in play, and the player
+                // joins (global state, START, on_join) once it's in, as they would after configuration.
+                downloading.put(player.getUUID(), link);
+                link.push(now, () -> {
+                    downloading.remove(player.getUUID());
+                    links.add(link);
+                    if (!published.manifest().equals(now.manifest())) link.push(published);
+                    link.whenHello(() -> api.joined(player));
                 });
                 return;
             }
-            api.left(handler.player); // queued before the removal below: on_leave still sees the player's state
-            String id = handler.player.getUUID().toString();
-            s.execute(() -> links.remove(id));
-        });
-        //? if >=1.20.5 {
-        ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
-        //?} else
-        /*ServerPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
+            links.add(link);
+            if (!now.manifest().equals((got == null ? ServerResources.EMPTY : got).manifest())) link.push(now);
+            // on_join once the client answered START: by then scripts see its mod modules too
+            link.whenHello(() -> api.joined(player));
+            return;
+        } else if (!published.manifest().resources().isEmpty()) {
+            player.connection.disconnect(Component.translatableWithFallback("troupe.disconnect.missing_mod", "This server needs the Troupe mod."));
+            return;
+        }
+        api.joined(player); // queued: runs after START went out, so state set by players.on_join reaches the client
     }
 
-    private static void receive(TroupePayload payload, ServerPlayer player) {
+    /** The player's play connection closed (server thread, before the player is removed). */
+    static void left(ServerPlayer player, MinecraftServer s) {
+        api.disconnected(player);
+        java.util.UUID uuid = player.getUUID();
+        if (downloading.containsKey(uuid)) { // never joined: no on_leave
+            s.execute(() -> {
+                Link d = downloading.remove(uuid);
+                if (d != null) d.close();
+            });
+            return;
+        }
+        api.left(player); // queued before the removal below: on_leave still sees the player's state
+        String id = uuid.toString();
+        s.execute(() -> links.remove(id));
+    }
+
+    /** A Troupe message from a player in play (server thread). */
+    static void receive(byte[] data, ServerPlayer player) {
         Link link = links.get(player.getUUID().toString());
         if (link == null) link = downloading.get(player.getUUID());
         if (link == null) return;
         try {
-            link.receive(payload.data());
+            link.receive(data);
         } catch (IOException e) {
             LOG.warn("Troupe protocol error from {}: {}", Compat.name(player.getGameProfile()), e.getMessage());
             player.connection.disconnect(Component.literal("Troupe: " + e.getMessage()));
@@ -232,7 +242,7 @@ public final class Troupe implements ModInitializer {
             var entity = level.getEntity(uuid);
             if (entity == null) continue;
             java.util.List<String> out = new java.util.ArrayList<>();
-            for (ServerPlayer p : net.fabricmc.fabric.api.networking.v1.PlayerLookup.tracking(entity)) out.add(p.getStringUUID());
+            for (ServerPlayer p : Loader.tracking(entity)) out.add(p.getStringUUID());
             if (entity instanceof ServerPlayer) out.add(entityId);
             return out;
         }
@@ -287,14 +297,11 @@ public final class Troupe implements ModInitializer {
                 o -> o instanceof String s ? net.minecraft.network.chat.Component.literal(s) : null);
         modules.convert(net.minecraft.resources.Identifier.class, Object::toString,
                 o -> o instanceof String s ? net.minecraft.resources.Identifier.tryParse(s) : null);
-        String sideEntrypoint = modules.side() == Side.CLIENT ? "troupe-client" : "troupe-server";
-        for (String entrypoint : new String[]{"troupe", sideEntrypoint}) {
-            for (var container : FabricLoader.getInstance().getEntrypointContainers(entrypoint, TroupeModule.class)) {
-                try {
-                    container.getEntrypoint().register(modules);
-                } catch (RuntimeException e) {
-                    LOG.error("{} failed to register its Troupe modules", container.getProvider().getMetadata().getId(), e);
-                }
+        for (var module : Loader.modules(modules.side())) {
+            try {
+                module.getValue().register(modules);
+            } catch (RuntimeException e) {
+                LOG.error("{} failed to register its Troupe modules", module.getKey(), e);
             }
         }
     }
@@ -360,7 +367,7 @@ public final class Troupe implements ModInitializer {
     private static String downloadUrl = "";
 
     private static com.google.gson.JsonObject readConfig() {
-        Path file = FabricLoader.getInstance().getConfigDir().resolve("troupe.json");
+        Path file = Loader.configDir().resolve("troupe.json");
         try {
             if (!Files.exists(file)) {
                 Files.createDirectories(file.getParent());
@@ -470,7 +477,7 @@ public final class Troupe implements ModInitializer {
         void run(String resource) throws ResourceException;
     }
 
-    private static LiteralArgumentBuilder<CommandSourceStack> command() {
+    static LiteralArgumentBuilder<CommandSourceStack> command() {
         return Commands.literal("troupe")
                 .requires(src -> Compat.permission(src, 3))
                 .then(Commands.literal("list").executes(c -> {
@@ -527,8 +534,7 @@ public final class Troupe implements ModInitializer {
         return 1;
     }
 
-    private static Link.Out out(ServerPlayer player) {
-        ServerSync.Sender s = sender(ServerPlayNetworking.getSender(player), reason -> player.connection.disconnect(reason));
+    private static Link.Out out(ServerSync.Sender s) {
         return new Link.Out() {
             public void send(byte[] message, Runnable onSent) {
                 s.send(message, onSent);
@@ -536,28 +542,6 @@ public final class Troupe implements ModInitializer {
 
             public void disconnect(String reason) {
                 s.disconnect(reason);
-            }
-        };
-    }
-
-    /** {@code disconnect}: PacketSender only has it from 1.20.5. */
-    static ServerSync.Sender sender(PacketSender packets, java.util.function.Consumer<Component> disconnect) {
-        return new ServerSync.Sender() {
-            @Override
-            public void send(byte[] message, Runnable onSent) {
-                TroupePayload payload = new TroupePayload(message);
-                if (onSent == null) packets.sendPacket(payload);
-                //? if >=1.21.6 {
-                else packets.sendPacket(payload, future -> {
-                    if (future.isSuccess()) onSent.run();
-                });
-                //?} else
-                /*else packets.sendPacket(payload, net.minecraft.network.PacketSendListener.thenRun(onSent));*/
-            }
-
-            @Override
-            public void disconnect(String reason) {
-                disconnect.accept(Component.literal(reason));
             }
         };
     }

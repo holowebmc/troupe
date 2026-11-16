@@ -8,15 +8,6 @@ import dev.holoweb.troupe.net.ClientSync;
 import dev.holoweb.troupe.net.Protocol;
 import dev.holoweb.troupe.net.Protocol.Manifest;
 import dev.holoweb.troupe.net.ResourceInfo;
-import net.fabricmc.api.ClientModInitializer;
-//? if >=1.20.5 {
-import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents;
-import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
-//?}
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
-import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
@@ -30,14 +21,16 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
  * Client side: downloads the server's resources into the (encrypted) cache while the connection is configuring (or,
- * before 1.20.2, when the server pushes them on join), runs them while in the world.
+ * before 1.20.2, when the server pushes them on join), runs them while in the world. Loader-free: FabricClientEntry
+ * and NeoForgeClientEntry call these from their events.
  */
-public final class TroupeClient implements ClientModInitializer {
-    private static final Path CACHE = FabricLoader.getInstance().getGameDir().resolve("troupe/blobs");
+public final class TroupeClient {
+    private static final Path CACHE = Loader.gameDir().resolve("troupe/blobs");
     private static final ResourceHost host = new ResourceHost(Side.CLIENT, task -> Minecraft.getInstance().execute(task));
     private static final ClientApi api = new ClientApi(host.modules());
     private static final ClientAssets assets = new ClientAssets(CACHE);
@@ -63,120 +56,122 @@ public final class TroupeClient implements ClientModInitializer {
         return manifest;
     }
 
-    @Override
-    public void onInitializeClient() {
+    /** Mod init (client), before any event. */
+    static void init() {
         Troupe.registerModules(host.modules());
         devStubs();
         deleteTree(CACHE.resolveSibling("cache")); // the unencrypted cache of Troupe 0.1
         ClientAssets.deleteBuilt(CACHE);
-        if (FabricLoader.getInstance().isModLoaded("vitrine")) host.setUi(VitrineUi.create());
+        if (Loader.isLoaded("vitrine")) host.setUi(VitrineUi.create());
         else Troupe.LOG.info("Vitrine isn't installed: resource pages (ui.*) won't open");
-
-        //? if >=1.20.5 {
-        ClientConfigurationConnectionEvents.INIT.register((handler, client) -> {
-            reset();
-            gate = new Gate();
-            joining = ((dev.holoweb.troupe.mixin.CommonListenerAccess) (Object) handler).troupe$serverData();
-            manifest = Manifest.EMPTY;
-            ClientAssets.deleteBuilt(CACHE); // the last server's packs were popped when we left it
-        });
-        ClientConfigurationConnectionEvents.DISCONNECT.register((handler, client) -> {
-            reset();
-            if (!manifest.resources().isEmpty()) QuietOverlay.request();
-            client.execute(assets::clear);
-        });
-
-        // The player stays in configuration until READY: files in the cache and assets loaded.
-        ClientConfigurationNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> {
-            var sender = ctx.responseSender();
-            Runnable cancel = () -> sender.disconnect(CANCELLED);
-            Gate g = gate;
-            if (g.let(payload.data(), m -> Minecraft.getInstance().execute(() -> showJoin(m, () -> sync, cancel,
-                    () -> g.open().forEach(held -> configMessage(held, sender))))))
-                configMessage(payload.data(), sender);
-        });
-        //?}
-
-        // INIT comes before any play packet, and its task is queued ahead of their handling on the render thread.
-        // The resources start when the server says START (after it sent the global state).
-        ClientPlayConnectionEvents.INIT.register((handler, client) -> client.execute(() -> {
-            started = false;
-            //? if <1.20.5 {
-            /*manifest = Manifest.EMPTY; // no configuration phase: the manifest comes in play
-            gate = new Gate();
-            ClientAssets.deleteBuilt(CACHE);
-            *///?}
-            link = new Link(host, new Link.Out() {
-                public void send(byte[] message, Runnable onSent) {
-                    ClientPlayNetworking.send(new TroupePayload(message));
-                    if (onSent != null) onSent.run();
-                }
-
-                public void disconnect(String reason) {
-                    handler.getConnection().disconnect(Component.literal(reason));
-                }
-            }, TroupeClient::startResources, CACHE, TroupeClient::applyManifest);
-            loadingAssets = false;
-            host.setNetwork(link);
-        }));
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            // Right away: before 1.20.2 the game drops the server pack as it leaves.
-            if (!manifest.resources().isEmpty()) QuietOverlay.request();
-            client.execute(() -> {
-                join = null;
-                if (link != null) link.close();
-                link = null;
-                host.stopAll();
-                assets.clear();
-                hud.clear();
-                keys.clear();
-                interact.clear();
-                world.clear();
-                RenderFx.reset();
-                host.setNetwork(null);
-                host.resetState();
-            });
-        });
-        //? if >=1.20.5 {
-        ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, ctx) -> receive(payload, ctx.player()));
-        //?} else
-        /*ClientPlayNetworking.registerGlobalReceiver(TroupePayload.TYPE, (payload, player, sender) -> receive(payload, player));*/
         RenderFx.register(host.modules(), host);
         host.setVersion(Troupe.VERSION);
         host.onFault((name, why) -> ClientCompat.chat(net.minecraft.network.chat.Component.translatable("troupe.fault", name)));
-        //? if >=26.1 {
-        net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents.COLLECT_SUBMITS.register(world::render);
-        //?} else if >=1.21.9 {
-        /*net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents.BEFORE_ENTITIES.register(world::render);
-        *///?} else
-        /*net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents.AFTER_ENTITIES.register(world::render);*/
-        //? if >=1.21.6 {
-        net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
-                net.minecraft.resources.Identifier.fromNamespaceAndPath("troupe", "hud"), (gui, delta) -> hud.draw(gui));
-        //?} else
-        /*net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((gui, delta) -> hud.draw(gui));*/
         Troupe.worldAllowed = world -> lines(TRUSTED_WORLDS).contains(world);
-        ClientKeys.init();        keys = new ClientKeys(host.modules(), host, CACHE.resolveSibling("keys.json"));
+        ClientKeys.init();
+        keys = new ClientKeys(host.modules(), host, CACHE.resolveSibling("keys.json"));
         interact = new ClientInteract(host, hud);
-        ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            api.tick();
-            keys.tick();
-            interact.tick(client);
-            host.tick();
-            askAboutWorld(client);
+    }
+
+    static WorldDraw world() {
+        return world;
+    }
+
+    static ClientHud hud() {
+        return hud;
+    }
+
+    static void tick(Minecraft client) {
+        api.tick();
+        keys.tick();
+        interact.tick(client);
+        host.tick();
+        askAboutWorld(client);
+    }
+
+    //? if >=1.20.5 {
+    /** A configuration connection opened ({@code server}: the server being joined, null in singleplayer). */
+    public static void configStarted(net.minecraft.client.multiplayer.ServerData server) {
+        reset();
+        gate = new Gate();
+        joining = server;
+        manifest = Manifest.EMPTY;
+        ClientAssets.deleteBuilt(CACHE); // the last server's packs were popped when we left it
+    }
+
+    public static void configEnded() {
+        reset();
+        if (!manifest.resources().isEmpty()) QuietOverlay.request();
+        Minecraft.getInstance().execute(assets::clear);
+    }
+
+    /**
+     * A Troupe message while configuring (Netty thread): the player stays in configuration until READY, files in the
+     * cache and assets loaded. {@code send} answers the server, {@code disconnect} drops the connection.
+     */
+    static void configReceived(byte[] data, Consumer<byte[]> send, Consumer<Component> disconnect) {
+        Runnable cancel = () -> disconnect.accept(CANCELLED);
+        Gate g = gate;
+        if (g.let(data, m -> Minecraft.getInstance().execute(() -> showJoin(m, () -> sync, cancel,
+                () -> g.open().forEach(held -> configMessage(held, send, disconnect))))))
+            configMessage(data, send, disconnect);
+    }
+    //?}
+
+    /**
+     * The play connection opened (render thread, before any play packet is handled). The resources start when the
+     * server says START (after it sent the global state).
+     */
+    static void playStarted(Consumer<byte[]> send, net.minecraft.network.Connection connection) {
+        started = false;
+        //? if <1.20.5 {
+        /*manifest = Manifest.EMPTY; // no configuration phase: the manifest comes in play
+        gate = new Gate();
+        ClientAssets.deleteBuilt(CACHE);
+        *///?}
+        link = new Link(host, new Link.Out() {
+            public void send(byte[] message, Runnable onSent) {
+                send.accept(message);
+                if (onSent != null) onSent.run();
+            }
+
+            public void disconnect(String reason) {
+                connection.disconnect(Component.literal(reason));
+            }
+        }, TroupeClient::startResources, CACHE, TroupeClient::applyManifest);
+        loadingAssets = false;
+        host.setNetwork(link);
+    }
+
+    public static void playEnded() {
+        // Right away: before 1.20.2 the game drops the server pack as it leaves.
+        if (!manifest.resources().isEmpty()) QuietOverlay.request();
+        Minecraft.getInstance().execute(() -> {
+            join = null;
+            if (link != null) link.close();
+            link = null;
+            host.stopAll();
+            assets.clear();
+            hud.clear();
+            keys.clear();
+            interact.clear();
+            world.clear();
+            RenderFx.reset();
+            host.setNetwork(null);
+            host.resetState();
         });
     }
 
     //? if >=1.20.5 {
     /** One message of the configuration-phase download (Netty thread, or the render thread for held ones). */
-    private static void configMessage(byte[] data, net.fabricmc.fabric.api.networking.v1.PacketSender sender) {
+    private static void configMessage(byte[] data, Consumer<byte[]> send, Consumer<Component> disconnect) {
         if (sync == null) {
             ClientSync[] me = new ClientSync[1];
-            sync = me[0] = new ClientSync(CACHE, m -> sender.sendPacket(new TroupePayload(m)),
+            sync = me[0] = new ClientSync(CACHE, send,
                     fetched -> Minecraft.getInstance().execute(() -> {
-                        if (sync == me[0]) configMessage(fetched, sender);
+                        if (sync == me[0]) configMessage(fetched, send, disconnect);
                     }));
-            Minecraft.getInstance().execute(() -> showJoin(null, () -> sync, () -> sender.disconnect(CANCELLED), () -> {}));
+            Minecraft.getInstance().execute(() -> showJoin(null, () -> sync, () -> disconnect.accept(CANCELLED), () -> {}));
         }
         ClientSync s = sync;
         try {
@@ -192,18 +187,19 @@ public final class TroupeClient implements ClientModInitializer {
         } catch (IOException e) {
             Troupe.LOG.warn("Resource download failed", e);
             reset();
-            sender.disconnect(Component.translatableWithFallback("troupe.disconnect.sync_failed", "Troupe: %s", e.getMessage()));
+            disconnect.accept(Component.translatableWithFallback("troupe.disconnect.sync_failed", "Troupe: %s", e.getMessage()));
         }
     }
     //?}
 
-    private static void receive(TroupePayload payload, LocalPlayer player) {
+    /** A Troupe message in play (render thread). */
+    static void receive(byte[] data, LocalPlayer player) {
         if (link == null) return;
         Link l = link;
         Runnable cancel = () -> player.connection.getConnection().disconnect(CANCELLED);
         Gate g = gate;
-        if (g.let(payload.data(), m -> showJoin(m, l::download, cancel, () -> g.open().forEach(held -> playMessage(held, player)))))
-            playMessage(payload.data(), player);
+        if (g.let(data, m -> showJoin(m, l::download, cancel, () -> g.open().forEach(held -> playMessage(held, player)))))
+            playMessage(data, player);
     }
 
     private static void playMessage(byte[] data, LocalPlayer player) {
