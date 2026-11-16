@@ -123,7 +123,7 @@ extensions.configure<ModrinthExtension> {
     token = providers.environmentVariable("MODRINTH_TOKEN")
     projectId = "holoweb-troupe"
     versionNumber = project.version.toString()
-    versionName = "Troupe ${property("mod.version")} for Minecraft ${property("mod.mc_versions").toString().replace(",", ", ")}"
+    versionName = "Troupe ${property("mod.version")} for ${if (neoforge) "NeoForge" else "Minecraft"} ${property("mod.mc_versions").toString().replace(",", ", ")}"
     versionType = "alpha"
     System.getenv("MODRINTH_CHANGELOG")?.let { changelog = it }
     uploadFile.set(tasks.named(if (obfuscated) "remapJar" else "jar"))
