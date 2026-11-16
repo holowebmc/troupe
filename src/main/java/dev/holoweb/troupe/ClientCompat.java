@@ -58,4 +58,41 @@ final class ClientCompat {
         root.add("pack", pack);
         return root.toString();
     }
+
+    /** Third person (or render.camera): the camera entity is drawn too. */
+    static boolean cameraDetached() {
+        //? if >=26.3 {
+        return Minecraft.getInstance().gameRenderer.mainCamera().isDetached();
+        //?} else
+        /*return Minecraft.getInstance().gameRenderer.getMainCamera().isDetached();*/
+    }
+
+    /** How far the game is between the last tick and the next, for interpolating positions. */
+    static float partialTick() {
+        //? if >=1.21.2 {
+        return Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false);
+        //?} else if >=1.21 {
+        /*return Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(false);
+        *///?} else
+        /*return Minecraft.getInstance().getFrameTime();*/
+    }
+
+    /** Packed block and sky light at a position, as entity render types want it. */
+    static int light(net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos) {
+        //? if >=26.3 {
+        return net.minecraft.util.LightCoordsUtil.getLightCoords(level, pos);
+        //?} else if >=26.1 {
+        /*return net.minecraft.client.renderer.LevelRenderer.getLightCoords(level, pos);
+        *///?} else
+        /*return net.minecraft.client.renderer.LevelRenderer.getLightColor(level, pos);*/
+    }
+
+    /** Uploads an image as a texture under {@code id}; the texture owns the image from here. */
+    static void registerTexture(net.minecraft.resources.Identifier id, com.mojang.blaze3d.platform.NativeImage image) {
+        //? if >=1.21.5 {
+        var texture = new net.minecraft.client.renderer.texture.DynamicTexture(id::toString, image);
+        //?} else
+        /*var texture = new net.minecraft.client.renderer.texture.DynamicTexture(image);*/
+        Minecraft.getInstance().getTextureManager().register(id, texture);
+    }
 }

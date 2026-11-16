@@ -343,6 +343,10 @@ final class ServerApi {
         return p;
     }
 
+    ResourceHost host() {
+        return host;
+    }
+
     static Identifier id(String id) {
         Identifier parsed = Identifier.tryParse(id);
         if (parsed == null) throw new IllegalArgumentException("bad id '" + id + "'");

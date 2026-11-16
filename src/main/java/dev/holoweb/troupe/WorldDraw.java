@@ -23,6 +23,8 @@ import java.util.Map;
  * draw.box(id, { min = {x, y, z}, max = {x, y, z}, color, fill = false, dim })
  * draw.billboard(id, texture, { pos = {x, y, z}, size = 1, color, dim })      an image from the assets, facing the camera
  * draw.text(id, text, { pos = {x, y, z}, color, scale = 1, background, see_through = false, dim })
+ * draw.model(id, 'fonte' | 'outra:fonte', { pos = {x, y, z}, yaw = 0, scale = 1, animation, dim })   a Blockbench model
+ *                             from the resource's models/ (see ModelDraw); the animation restarts only when it changes
  * draw.remove(id)  draw.clear()
  * render.on_world(fn(view))   every frame (view = {x, y, z} of the camera); inside it render.line / render.box /
  *                             render.billboard / render.world_text take the same options and draw for that frame only
@@ -31,7 +33,7 @@ import java.util.Map;
  * blocks aren't drawn. Line width is ignored before 1.21.11 (the game draws 1-pixel lines there).
  */
 final class WorldDraw {
-    sealed interface Shape permits Line, Box, Board, Label {
+    sealed interface Shape permits Line, Box, Board, Label, Model {
         String dim();
 
         Vec3 anchor();
@@ -61,23 +63,32 @@ final class WorldDraw {
         }
     }
 
+    record Model(ModelDraw.Prop prop, String dim) implements Shape {
+        public Vec3 anchor() {
+            return prop.pos();
+        }
+    }
+
     private static final int MAX_SHAPES = 1024, MAX_FRAME_SHAPES = 4096;
     private static final double MAX_DISTANCE = 256;
     private static final int FULL_BRIGHT = 0xF000F0;
 
     private final ModuleRegistry modules;
     private final Module render;
+    private final ModelDraw models;
     private final Map<String, Map<String, Shape>> shapes = new LinkedHashMap<>();
     private final List<Shape> frame = new ArrayList<>();
     private boolean collecting;
 
     WorldDraw(ModuleRegistry modules, ResourceHost host) {
         this.modules = modules;
+        this.models = new ModelDraw(host);
         modules.global("draw")
                 .function("line", a -> keep(a, line(a.table(1))))
                 .function("box", a -> keep(a, box(a.table(1))))
                 .function("billboard", a -> keep(a, board(a.string(1), a.table(2))))
                 .function("text", a -> keep(a, label(a.string(1), a.get(2) == null ? Map.of() : a.table(2))))
+                .function("model", a -> keep(a, model(a)))
                 .function("remove", a -> {
                     Map<String, Shape> mine = shapes.get(a.resource());
                     if (mine != null) mine.remove(a.string(0));
@@ -98,6 +109,7 @@ final class WorldDraw {
 
     void clear() {
         shapes.clear();
+        models.clear();
     }
 
     private Object keep(Args a, Shape s) {
@@ -135,6 +147,19 @@ final class WorldDraw {
         Object bg = o.get("background");
         return new Label(text, vec(o, "pos"), ClientHud.color(o, 0xFFFFFF), (float) Math.max(0.1, Math.min(16, num(o, "scale", 1))),
                 bg instanceof Number n ? (int) n.longValue() : 0x40000000, Boolean.TRUE.equals(o.get("see_through")), dim(o));
+    }
+
+    private Model model(Args a) {
+        String ref = BbModel.qualify(a.resource(), a.string(1));
+        Map<String, Object> o = a.table(2);
+        String animation = o.get("animation") == null ? null : String.valueOf(o.get("animation"));
+        models.check(ref, animation);
+        Map<String, Shape> mine = shapes.get(a.resource());
+        long since = mine != null && mine.get(a.string(0)) instanceof Model m && m.prop().ref().equals(ref)
+                && java.util.Objects.equals(m.prop().animation(), animation) ? m.prop().since() : System.nanoTime();
+        double scale = num(o, "scale", 1);
+        if (!(scale > 0) || scale > 64) throw new IllegalArgumentException("scale must be 0..64");
+        return new Model(new ModelDraw.Prop(ref, vec(o, "pos"), (float) num(o, "yaw", 0), (float) scale, animation, since), dim(o));
     }
 
     private static Vec3 vec(Map<String, Object> o, String key) {
@@ -240,6 +265,10 @@ final class WorldDraw {
     *///?}
         Vec3 cam = camState.pos;
         List<Shape> shapes = collect(cam);
+        var meshes = models.collect(cam, props(shapes));
+        meshes.forEach((texture, quads) -> collector.submitCustomGeometry(ps, cutout(texture), (pose, vc) -> {
+            for (ModelDraw.Quad q : quads) ModelDraw.quad(pose, vc, q);
+        }));
         if (shapes.isEmpty()) return;
         collector.submitCustomGeometry(ps, net.minecraft.client.renderer.rendertype.RenderTypes.lines(), (pose, vc) -> {
             for (Shape s : shapes) {
@@ -277,10 +306,16 @@ final class WorldDraw {
         var camera = ctx.camera();
         Vec3 cam = camera.getPosition();
         List<Shape> shapes = collect(cam);
-        if (shapes.isEmpty() || ctx.consumers() == null) return;
+        if (ctx.consumers() == null) return;
         PoseStack ps = ctx.matrixStack();
         var buffers = ctx.consumers();
         PoseStack.Pose pose = ps.last();
+        var meshes = models.collect(cam, props(shapes));
+        meshes.forEach((texture, quads) -> {
+            VertexConsumer vc = buffers.getBuffer(cutout(texture));
+            for (ModelDraw.Quad q : quads) ModelDraw.quad(pose, vc, q);
+        });
+        if (shapes.isEmpty() && meshes.isEmpty()) return;
         VertexConsumer lines = buffers.getBuffer(net.minecraft.client.renderer.RenderType.lines());
         for (Shape s : shapes) {
             if (s instanceof Line l) line(pose, lines, sub(l.a(), cam), sub(l.b(), cam), l.color(), l.width());
@@ -309,6 +344,27 @@ final class WorldDraw {
             }
         }
         if (buffers instanceof net.minecraft.client.renderer.MultiBufferSource.BufferSource bs) bs.endBatch();
+    }
+    *///?}
+
+    private static List<ModelDraw.Prop> props(List<Shape> shapes) {
+        List<ModelDraw.Prop> props = new ArrayList<>();
+        for (Shape s : shapes) if (s instanceof Model m) props.add(m.prop());
+        return props;
+    }
+
+    /** Entity textures without back-face culling (Blockbench faces can be seen from inside, like planes). */
+    //? if >=26.1 {
+    private static net.minecraft.client.renderer.rendertype.RenderType cutout(Identifier texture) {
+        return net.minecraft.client.renderer.rendertype.RenderTypes.entityCutout(texture);
+    }
+    //?} else if >=1.21.9 {
+    /*private static net.minecraft.client.renderer.rendertype.RenderType cutout(Identifier texture) {
+        return net.minecraft.client.renderer.rendertype.RenderTypes.entityCutoutNoCull(texture);
+    }
+    *///?} else {
+    /*private static net.minecraft.client.renderer.RenderType cutout(Identifier texture) {
+        return net.minecraft.client.renderer.RenderType.entityCutoutNoCull(texture);
     }
     *///?}
 

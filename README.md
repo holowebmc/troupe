@@ -2,7 +2,7 @@
 
 Troupe is a Fabric mod that lets a Minecraft server run its own scripts and interfaces on its players' clients. Resources live on the server; each one has server code, client code, shared code, UI pages and assets. Clients download the client side when they join and run it in a sandbox.
 
-- **One folder per resource.** `server/` never leaves the server; `client/`, `shared/`, `ui/` and `assets/` go to the players.
+- **One folder per resource.** `server/` never leaves the server; `client/`, `shared/`, `ui/`, `assets/` and `models/` go to the players.
 - **Lua on both sides,** with calls between client and server that wait for the answer, replicated state, timers and exports between resources.
 - **Interfaces in HTML** through [Vitrine](https://github.com/holowebmc/vitrine): on screen or on a panel in the world.
 - **Restart without kicking anyone.** Everything a resource registers is released when it stops; connected clients follow.
@@ -27,6 +27,7 @@ resources/bank/
   shared/config.lua  # require('shared.config') on both sides
   ui/index.html
   assets/            # textures, models, sounds: a resource pack on the client
+  models/npc.bbmodel # Blockbench projects: entity:set_model('npc'), draw.model(...)
 ```
 
 ```lua

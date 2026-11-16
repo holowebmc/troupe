@@ -3,6 +3,6 @@
 	"package": "dev.holoweb.troupe.mixin",
 	"compatibilityLevel": "JAVA_${java}",
 	"mixins": ["ServerStatusMixin", "BlockItemMixin", "ChunkMapAccess", "TrackedEntityMixin"],
-	"client": ["ServerStatusPingerMixin", "OnlineServerEntryMixin", "CameraMixin", "GameRendererMixin", "LoadingOverlayAccess", "SetOverlayMixin", "OptionsAccess", "KeyMappingAccess"${client_mixins}],
+	"client": ["ServerStatusPingerMixin", "OnlineServerEntryMixin", "CameraMixin", "GameRendererMixin", "LoadingOverlayAccess", "SetOverlayMixin", "OptionsAccess", "KeyMappingAccess", "EntityRenderDispatcherMixin"${client_mixins}],
 	"injectors": { "defaultRequire": 1 }
 }

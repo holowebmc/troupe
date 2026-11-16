@@ -117,6 +117,11 @@
 ---@field admin? boolean  operators only
 ---@field permission? string  permission node needed, e.g. 'bank.withdraw'
 
+---@class ModelOptions
+---@field scale? number  0..16 (default 1)
+---@field idle? string  animation that plays while it stands
+---@field walk? string  animation that plays while it moves
+
 ---@class BossbarOptions
 ---@field text? string
 ---@field color? 'pink'|'blue'|'red'|'green'|'yellow'|'purple'|'white'
@@ -372,6 +377,15 @@ function Player:set_instance(name) end
 ---@return string?
 function Player:instance() end
 
+---Draws the player as a Blockbench model from models/<name>.bbmodel ('name', or 'resource:name' for another resource's), for everyone who sees it; nil goes back to the normal look. The hitbox stays the same.
+---@param name? string
+---@param opts? ModelOptions
+function Player:set_model(name, opts) end
+
+---Plays an animation of the model over idle/walk until it ends (a looping one plays until the next call); nil stops it.
+---@param name? string
+function Player:animate(name) end
+
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Entity handles
 
@@ -489,6 +503,15 @@ function Entity:set_instance(name) end
 ---The instance of this resource the entity is in, if any.
 ---@return string?
 function Entity:instance() end
+
+---Draws the entity as a Blockbench model from models/<name>.bbmodel ('name', or 'resource:name' for another resource's), for everyone who sees it; nil goes back to the normal look. The hitbox stays the same.
+---@param name? string
+---@param opts? ModelOptions
+function Entity:set_model(name, opts) end
+
+---Plays an animation of the model over idle/walk until it ends (a looping one plays until the next call); nil stops it.
+---@param name? string
+function Entity:animate(name) end
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- players
@@ -743,6 +766,17 @@ function players.set_instance(player, name) end
 ---@return string?
 function players.instance(player) end
 
+---Draws the player as a Blockbench model from models/<name>.bbmodel; nil goes back to the normal look.
+---@param player string
+---@param name? string
+---@param opts? ModelOptions
+function players.set_model(player, name, opts) end
+
+---Plays an animation of the player's model over idle/walk; nil stops it.
+---@param player string
+---@param name? string
+function players.animate(player, name) end
+
 ---A player joined; also runs for everyone already online when the resource starts.
 ---@param handler fun(player: Player)
 function players.on_join(handler) end
@@ -959,6 +993,17 @@ function entities.set_instance(id, name) end
 ---@param id string
 ---@return string?
 function entities.instance(id) end
+
+---Draws the entity as a Blockbench model from models/<name>.bbmodel; nil goes back to the normal look.
+---@param id string
+---@param name? string
+---@param opts? ModelOptions
+function entities.set_model(id, name, opts) end
+
+---Plays an animation of the entity's model over idle/walk; nil stops it.
+---@param id string
+---@param name? string
+function entities.animate(id, name) end
 
 ---A living entity (not a player) is about to take damage; returning false cancels.
 ---@param handler fun(entity: Entity, amount: number, cause: DamageCause): boolean?

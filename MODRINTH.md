@@ -10,6 +10,7 @@ A server keeps **resources**: folders with Lua code for the server, Lua code for
 - **Interfaces in HTML** through [Vitrine](https://modrinth.com/mod/holoweb-vitrine): on screen, or on panels placed in the world.
 - **Game API.** Players, inventories, entities, world, chat, commands, bossbars, sidebar and teams on the server. HUD, shapes in the world, camera paths and post effects on the client.
 - **Building blocks for gameplay.** Zones, interaction prompts, custom items, instances that hide players from each other, and keys that players rebind in Controls.
+- **Blockbench models.** Drop a `.bbmodel` in a resource and dress any mob or player with it, animations included, or place it in the world. No resource pack, no client mod.
 - **Storage and web.** On the server: a SQL database (SQLite built in, other JDBC drivers accepted), a key-value store and HTTP requests.
 - **Restart without kicking anyone.** `/troupe restart bank` reloads one resource while players stay connected. Everything it registered is released when it stops.
 - **Assets.** Textures, models and sounds in a resource's `assets/` folder reach the client as a resource pack.

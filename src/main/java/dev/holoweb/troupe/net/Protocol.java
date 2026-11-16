@@ -78,7 +78,7 @@ public final class Protocol {
     public static final long MAX_TOTAL_SIZE = 1L << 30;
 
     /** Folders the client receives; everything else in a resource (server/) never leaves the server. */
-    public static final List<String> CLIENT_DIRS = List.of("client", "shared", "ui", "assets");
+    public static final List<String> CLIENT_DIRS = List.of("client", "shared", "ui", "assets", "models");
     /** Sent with the client files: the client needs the dependencies too. */
     public static final String RESOURCE_JSON = "resource.json";
 

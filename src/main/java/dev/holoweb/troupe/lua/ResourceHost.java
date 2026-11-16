@@ -49,6 +49,12 @@ public final class ResourceHost {
         void received(String resource, Peer from, String name, String json);
     }
 
+    /** Client: an entity's state as it reaches this client ({@code key} null: the entity left sight, forget it all). */
+    @FunctionalInterface
+    public interface EntityStateListener {
+        void changed(String resource, String entity, String key, String json);
+    }
+
     @FunctionalInterface
     public interface StateVisitor {
         void visit(String resource, String key, String json);
@@ -69,6 +75,7 @@ public final class ResourceHost {
     private int ticks;
     private final List<StateListener> stateListeners = new ArrayList<>();
     private final List<BuiltinListener> builtinListeners = new ArrayList<>();
+    private final List<EntityStateListener> entityListeners = new ArrayList<>();
     /**
      * Stopped for going over a limit, with the generation it had: startAll and apply leave it alone until someone
      * starts it by name (server) or the server restarts it (client), or it would go over the limit again right away.
@@ -149,6 +156,11 @@ public final class ResourceHost {
         stateListeners.add(listener);
     }
 
+    /** Client: Troupe's own modules follow entity state (their keys start with "troupe:"). */
+    public void onEntityState(EntityStateListener listener) {
+        entityListeners.add(listener);
+    }
+
     public void onBuiltin(BuiltinListener listener) {
         builtinListeners.add(listener);
     }
@@ -184,7 +196,7 @@ public final class ResourceHost {
     }
 
     /** The files of an available resource (running or not), or null. */
-    LuaRuntime.Files filesOf(String resource) {
+    public LuaRuntime.Files filesOf(String resource) {
         Entry e = available.get(resource);
         return e == null ? null : e.files();
     }
@@ -489,6 +501,7 @@ public final class ResourceHost {
         Map<String, Map<String, String>> players = playerState.remove(resource);
         if (global != null) for (String key : global.keySet()) for (StateListener l : stateListeners) l.changed(resource, key, null);
         Map<String, Map<String, String>> entities = entityState.remove(resource);
+        if (entities != null) for (String entity : entities.keySet()) for (EntityStateListener l : entityListeners) l.changed(resource, entity, null, null);
         LuaRuntime r = runtime(resource);
         if (r == null) return;
         if (entities != null) entities.forEach((entity, map) -> map.keySet().forEach(key -> r.net.entityStateChanged(entity, key, null)));
@@ -503,13 +516,13 @@ public final class ResourceHost {
         entityWatchers = watchers;
     }
 
-    String getEntityState(String resource, String entity, String key) {
+    public String getEntityState(String resource, String entity, String key) {
         Map<String, String> map = entityState.getOrDefault(resource, Map.of()).get(entity);
         return map == null ? null : map.get(key);
     }
 
-    /** Server: stores and sends to who sees the entity. {@code json} null removes. */
-    void setEntityState(String resource, String entity, String key, String json) {
+    /** Server: stores and sends to who sees the entity. {@code json} null removes. Troupe's own keys start with "troupe:". */
+    public void setEntityState(String resource, String entity, String key, String json) {
         Map<String, Map<String, String>> byEntity = entityState.computeIfAbsent(resource, k -> new HashMap<>());
         if (json == null) {
             Map<String, String> map = byEntity.get(entity);
@@ -552,6 +565,7 @@ public final class ResourceHost {
     void receiveEntityState(String resource, String entity, String key, String json) {
         Map<String, Map<String, String>> byEntity = entityState.computeIfAbsent(resource, k -> new HashMap<>());
         LuaRuntime r = runtime(resource);
+        for (EntityStateListener l : entityListeners) l.changed(resource, entity, key, json);
         if (key == null) {
             Map<String, String> gone = byEntity.remove(entity);
             if (gone != null && r != null) for (String k : gone.keySet()) r.net.entityStateChanged(entity, k, null);

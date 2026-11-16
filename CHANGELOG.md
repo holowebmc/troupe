@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Blockbench models: put a `.bbmodel` in a resource's `models/` and dress any entity or player with it (`entity:set_model('npc', { idle, walk })`, `entity:animate('wave')`), or place one in the world on a client (`draw.model`). Textures and animations come from the project file; nothing to export.
+
 ## 0.1.0
 
 First release, for Minecraft 1.20–1.20.1, 1.21–1.21.1, 1.21.11 and 26.3.

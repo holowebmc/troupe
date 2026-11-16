@@ -128,7 +128,7 @@ if players then
                         "title", "actionbar", "sound", "kick", "tab", "looking_at",
                         "items", "item", "set_item", "count", "take", "held",
                         "attribute", "set_attribute", "set_velocity", "glow", "dismount", "vehicle", "passengers",
-                        "set_instance", "instance" }) do
+                        "set_instance", "instance", "set_model", "animate" }) do
     local f = players[fn]
     P[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end
@@ -146,7 +146,7 @@ if entities then
   for _, fn in ipairs({ "pos", "teleport", "remove", "alive", "name", "set_name", "health", "set_health",
                         "equip", "equipment", "attribute", "set_attribute", "effect", "clear_effects",
                         "set_velocity", "glow", "dismount", "vehicle", "passengers", "move_to", "set_ai",
-                        "set_instance", "instance" }) do
+                        "set_instance", "instance", "set_model", "animate" }) do
     local f = entities[fn]
     E[fn] = function(self, ...) return relay(pcall(f, self.id, ...)) end
   end

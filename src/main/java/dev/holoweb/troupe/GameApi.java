@@ -76,6 +76,56 @@ final class GameApi {
         blocks(modules);
         advancedEntities(modules);
         customItems(modules);
+        models(modules);
+    }
+
+    static final String MODEL = "troupe:model", ANIM = "troupe:anim";
+
+    /**
+     * {@code entity:set_model('vendedor' | 'outra:vendedor' | nil, { scale = 1, idle, walk })} and
+     * {@code entity:animate(name | nil)}, players too: clients that see the entity draw that model from the resource's
+     * {@code models/} instead of it (the hitbox stays the entity's). {@code idle} / {@code walk} play by themselves
+     * while it stands or moves; {@code animate} plays one over them until it ends (or for good, when it loops).
+     * Both go as entity state, so only who sees the entity gets them.
+     */
+    private void models(ModuleRegistry modules) {
+        var host = api.host();
+        both(modules, "set_model", (e, a) -> {
+            String id = e.getStringUUID();
+            if (a.get(1) == null) {
+                host.setEntityState(a.resource(), id, MODEL, null);
+                host.setEntityState(a.resource(), id, ANIM, null);
+                return null;
+            }
+            String ref = BbModel.qualify(a.resource(), a.string(1));
+            BbModel m = BbModel.load(host, ref);
+            Map<String, Object> o = a.get(2) == null ? Map.of() : a.table(2);
+            double scale = o.get("scale") instanceof Number n ? n.doubleValue() : 1;
+            if (!(scale > 0) || scale > 16) throw new IllegalArgumentException("scale must be 0..16");
+            com.google.gson.JsonObject j = new com.google.gson.JsonObject();
+            j.addProperty("model", ref);
+            j.addProperty("scale", scale);
+            for (String k : List.of("idle", "walk")) {
+                if (o.get(k) == null) continue;
+                j.addProperty(k, m.animation(String.valueOf(o.get(k)), ref).name());
+            }
+            host.setEntityState(a.resource(), id, MODEL, j.toString());
+            return null;
+        });
+        both(modules, "animate", (e, a) -> {
+            String id = e.getStringUUID();
+            if (a.get(1) == null) {
+                host.setEntityState(a.resource(), id, ANIM, null);
+                return null;
+            }
+            String model = host.getEntityState(a.resource(), id, MODEL);
+            if (model == null) throw new IllegalArgumentException("set_model first");
+            String ref = com.google.gson.JsonParser.parseString(model).getAsJsonObject().get("model").getAsString();
+            com.google.gson.JsonObject j = new com.google.gson.JsonObject();
+            j.addProperty("name", BbModel.load(host, ref).animation(a.string(1), ref).name());
+            host.setEntityState(a.resource(), id, ANIM, j.toString());
+            return null;
+        });
     }
 
     /** Functions for both entities.* and players.* (the first argument is an entity id or a player id). */

@@ -276,6 +276,7 @@ final class NetApi {
         }));
         meta.rawset("__newindex", LibFunction.create((s, self, key, value) -> {
             if (!server) throw new LuaError("state is read-only on the client; the server writes it");
+            if (Values.str(key).startsWith(ResourceHost.RESERVED)) throw new LuaError("state keys starting with 'troupe:' are Troupe's own");
             rt.host.setEntityState(rt.name, entity, Values.str(key), value.isNil() ? null : encode(value));
             return Constants.NIL;
         }));

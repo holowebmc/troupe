@@ -208,6 +208,13 @@ function effects.particles(id, x, y, z, opts) end
 ---@field alpha? number 0..1, overrides the color's alpha
 ---@field dim? string only in this dimension
 
+---@class ModelOpts
+---@field pos Pos
+---@field yaw? number degrees, 0 faces south (default 0)
+---@field scale? number 0..64 (default 1)
+---@field animation? string plays from the start whenever it changes
+---@field dim? string only in this dimension
+
 ---@class WorldTextOpts
 ---@field pos Pos
 ---@field color? Color default white
@@ -240,6 +247,12 @@ function draw.billboard(id, texture, opts) end
 ---@param text string
 ---@param opts WorldTextOpts
 function draw.text(id, text, opts) end
+
+---Draws or replaces a Blockbench model from models/<name>.bbmodel ('name', or 'resource:name') in the world.
+---@param id string
+---@param model string
+---@param opts ModelOpts
+function draw.model(id, model, opts) end
 
 ---Removes one shape of this resource.
 ---@param id string
