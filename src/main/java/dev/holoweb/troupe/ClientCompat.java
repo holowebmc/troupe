@@ -27,6 +27,21 @@ final class ClientCompat {
         /*player.displayClientMessage(message, false);*/
     }
 
+    static int selectedSlot(net.minecraft.world.entity.player.Inventory inv) {
+        //? if >=1.21.5 {
+        return inv.getSelectedSlot();
+        //?} else
+        /*return inv.selected;*/
+    }
+
+    /** The client sends the new slot to the server on its own (the game mode's tick checks the carried item). */
+    static void selectSlot(net.minecraft.world.entity.player.Inventory inv, int slot) {
+        //? if >=1.21.5 {
+        inv.setSelectedSlot(slot);
+        //?} else
+        /*inv.selected = slot;*/
+    }
+
     static Screen screen() {
         //? if >=26.2 {
         return Minecraft.getInstance().gui.screen();

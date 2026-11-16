@@ -33,6 +33,8 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
  * hud.image(id, texture, { x, y, w, h, u = 0, v = 0, tex_w = w, tex_h = h, color = 0xffffffff, anchor, layer })
  *   (texture: 'ns:textures/gui/x.png' from a resource's assets; by default the whole image fills w × h)
  * hud.remove(id)  hud.clear()
+ * hud.native(false, { 'chat' }) hides the game's HUD and every other mod's, but the listed layers; hud.native(true) shows it
+ *   again. Troupe's drawing and Vitrine's pages always stay. NeoForge only for now (its GUI layers); returns whether it works here.
  *   anchors: top_left, top, top_right, left, center, right, bottom_left, bottom, bottom_right; higher layers on top
  * render.on_hud(fn(screen))   every frame (screen = {width, height}); inside it render.rect / render.text / render.image
  *                             take the same options and draw for that frame only
@@ -50,8 +52,15 @@ final class ClientHud {
     private record Item(String text, Identifier texture, int x, int y, int w, int h, int u, int v, int texW, int texH,
                         int color, int anchor, boolean shadow, float scale, int layer) {}
 
+    /** Set by the NeoForge entry, whose GUI layers can be cancelled one by one; Fabric has no such hook yet. */
+    static boolean layersHideable;
+    /** Layers that never hide: Troupe's own drawing and Vitrine's on-screen pages. */
+    private static final java.util.Set<String> OURS = java.util.Set.of("troupe:hud", "vitrine:screens");
+
     /** resource → (id → item), in insertion order. */
     private final Map<String, Map<String, Item>> items = new LinkedHashMap<>();
+    /** resource → the game's layers it keeps while hiding the rest (hud.native(false, keep)). */
+    private final Map<String, java.util.Set<String>> hiding = new LinkedHashMap<>();
     private final List<Item> frame = new ArrayList<>();
     private final ModuleRegistry modules;
     private final Module render;
@@ -77,6 +86,16 @@ final class ClientHud {
                 .function("clear", a -> {
                     items.remove(a.resource());
                     return null;
+                })
+                .function("native", "(show: boolean, keep?: string[]) -> boolean", a -> {
+                    if (a.bool(0)) {
+                        hiding.remove(a.resource());
+                    } else {
+                        java.util.Set<String> keep = new java.util.HashSet<>();
+                        if (a.get(1) != null) for (Object o : a.list(1)) keep.add(ServerApi.id(String.valueOf(o)).toString());
+                        hiding.put(a.resource(), keep);
+                    }
+                    return layersHideable;
                 })
                 .function("toast", a -> {
                     Component title = Component.literal(a.string(0)), text = a.get(1) == null ? null : Component.literal(a.string(1));
@@ -122,13 +141,54 @@ final class ClientHud {
                 .function("image", a -> now(image(a.string(0), opts(a, 1))))
                 .event("hud");
 
-        modules.global("player").function("looking_at", a -> looking());
+        modules.global("player").function("looking_at", a -> looking())
+                // the scroll wheel and the number keys never leave the hand empty (the selection skips empty hotbar slots)
+                .function("skip_empty_slots", "(on: boolean)", a -> {
+                    if (a.bool(0)) skipping.add(a.resource());
+                    else skipping.remove(a.resource());
+                    return null;
+                });
 
-        host.onStop(items::remove);
+        host.onStop(resource -> {
+            items.remove(resource);
+            hiding.remove(resource);
+            skipping.remove(resource);
+        });
     }
 
     void clear() {
         items.clear();
+        hiding.clear();
+        skipping.clear();
+    }
+
+    /** Resources that asked for player.skip_empty_slots(true). */
+    private final java.util.Set<String> skipping = new java.util.HashSet<>();
+    private int lastSlot;
+
+    /**
+     * Every client tick, after the game read the hotbar keys: a selection on an empty slot moves on to a filled one.
+     * ponytail: a scroll lands between ticks, so an empty hand can show for up to a tick; a hook on the scroll itself
+     * would close that.
+     */
+    void tickHotbar() {
+        var player = Minecraft.getInstance().player;
+        if (skipping.isEmpty() || player == null) return;
+        var inv = player.getInventory();
+        boolean[] filled = new boolean[9];
+        for (int i = 0; i < 9; i++) filled[i] = !inv.getItem(i).isEmpty();
+        int cur = ClientCompat.selectedSlot(inv), to = Hotbar.skipEmpty(filled, lastSlot, cur);
+        if (to >= 0 && to != cur) ClientCompat.selectSlot(inv, to);
+        lastSlot = to >= 0 ? to : cur;
+    }
+
+    /** Whether a GUI layer is hidden: some resource hides the game's HUD and doesn't keep this one. */
+    boolean hides(Identifier layer) {
+        if (hiding.isEmpty()) return false;
+        String name = layer.toString();
+        if (OURS.contains(name)) return false;
+        for (var keep : hiding.values()) if (!keep.contains(name)) return true;
+        return false;
     }
 
     private Object keep(Args a, Item item) {

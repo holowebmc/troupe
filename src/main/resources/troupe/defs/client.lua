@@ -47,6 +47,11 @@ function player.pos() end
 ---@return LookingAt?
 function player.looking_at() end
 
+---true: the scroll wheel and the number keys skip empty hotbar slots, so the hand is never empty while there's
+---something in the hotbar. Ends when the resource stops.
+---@param on boolean
+function player.skip_empty_slots(on) end
+
 -- ---- entities
 
 ---@class NearEntity : Entity
@@ -85,20 +90,37 @@ function keys.watch(key) end
 ---@param handler fun(key: string)
 function keys.on_press(handler) end
 
+---Runs handler when a watched key that was pressed is let go (screen open or not).
+---@param handler fun(key: string)
+function keys.on_release(handler) end
+
 ---Runs handler when a key made with keys.register is pressed with no screen open.
 ---@param handler fun(id: string)
 function keys.on_action(handler) end
 
----Runs fn when key ('b', 'f6', 'left.alt') is pressed with no screen open.
+---Runs handler when a key made with keys.register that was pressed is let go (screen open or not).
+---@param handler fun(id: string)
+function keys.on_action_release(handler) end
+
+---Runs fn when key ('b', 'f6', 'left.alt') is pressed with no screen open, and release (if given) when it's let go.
 ---@param key string
 ---@param fn fun()
-function keys.bind(key, fn) end
+---@param release? fun()
+function keys.bind(key, fn, release) end
+
+---Turns off one of the game's or a mod's key mappings by name ('key.inventory', 'key.swapOffhand', 'key.chat',
+---'key.tacz.shoot.desc'): it's never down and its presses are dropped. false turns it back on; it also comes back
+---when the resource stops. A mod that reads raw key events instead of its mapping still sees the key.
+---@param name string
+---@param on? boolean default true
+function keys.block(name, on) end
 
 ---Like keys.bind, but the player can change the key in the game's Controls screen (id: a-z, 0-9, '_').
 ---@param id string
 ---@param opts KeyOpts?
 ---@param fn fun()
-function keys.register(id, opts, fn) end
+---@param release? fun()
+function keys.register(id, opts, fn, release) end
 
 -- ---- hud
 
@@ -151,6 +173,14 @@ function hud.remove(id) end
 
 ---Removes every HUD item of this resource.
 function hud.clear() end
+
+---false hides the game's HUD and every other mod's (hotbar, crosshair, health, chat...) but the layers in keep
+---('chat', 'minecraft:hotbar', 'mymod:ammo'); true shows it again. Troupe's drawing and Vitrine's pages always stay,
+---and it comes back when the resource stops. NeoForge only for now; returns whether it works here.
+---@param show boolean
+---@param keep? string[]
+---@return boolean
+function hud.native(show, keep) end
 
 ---Shows a toast notification.
 ---@param title string

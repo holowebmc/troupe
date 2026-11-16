@@ -221,30 +221,46 @@ if teams then
   function teams.remove(p) return relay(pcall(rm, pid(p))) end
 end
 
--- Client: keys.bind('b', fn) runs fn when b is pressed with no screen open.
+-- Client: keys.bind('b', fn, release?) runs fn when b is pressed with no screen open, and release when it's let go.
 if keys then
-  -- keys.register('abrir', { key = 'b', label = 'Abrir banco' }, fn): the same, but the player can change the key
-  -- in the game's Controls screen.
-  local register, actions = keys.register, {}
+  -- keys.register('abrir', { key = 'b', label = 'Abrir banco' }, fn, release?): the same, but the player can change
+  -- the key in the game's Controls screen.
+  local register, actions, releases = keys.register, {}, {}
   if register then
     keys.on_action(function(id)
       if actions[id] then actions[id]() end
     end)
-    function keys.register(id, opts, fn)
+    if keys.on_action_release then
+      keys.on_action_release(function(id)
+        if releases[id] then releases[id]() end
+      end)
+    end
+    function keys.register(id, opts, fn, release)
       if type(fn) ~= "function" then error("bad argument #3 to 'register' (function expected, got " .. type(fn) .. ")", 2) end
+      if release ~= nil and type(release) ~= "function" then error("bad argument #4 to 'register' (function expected, got " .. type(release) .. ")", 2) end
       relay(pcall(register, id, opts or {}))
-      actions[id] = fn
+      actions[id], releases[id] = fn, release
     end
   end
-  local bound = {}
+  local bound, unbound = {}, {}
   keys.on_press(function(key)
     for _, fn in ipairs(bound[key] or {}) do fn() end
   end)
-  function keys.bind(key, fn)
+  if keys.on_release then
+    keys.on_release(function(key)
+      for _, fn in ipairs(unbound[key] or {}) do fn() end
+    end)
+  end
+  function keys.bind(key, fn, release)
     if type(fn) ~= "function" then error("bad argument #2 to 'bind' (function expected, got " .. type(fn) .. ")", 2) end
+    if release ~= nil and type(release) ~= "function" then error("bad argument #3 to 'bind' (function expected, got " .. type(release) .. ")", 2) end
     relay(pcall(keys.watch, key))
     bound[key] = bound[key] or {}
     table.insert(bound[key], fn)
+    if release then
+      unbound[key] = unbound[key] or {}
+      table.insert(unbound[key], release)
+    end
   end
 end
 

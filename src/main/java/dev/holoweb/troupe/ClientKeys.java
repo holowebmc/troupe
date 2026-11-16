@@ -105,13 +105,23 @@ final class ClientKeys {
                     KeyMapping.resetMapping();
                     return null;
                 })
-                .event("action");
-        host.onStop(resource -> remove(b -> b.resource().equals(resource)));
+                .event("action")
+                .event("action_release")
+                // keys.block('key.inventory') turns one of the game's or a mod's key mappings off; false turns it back on
+                .function("block", "(name: string, on?: boolean)", a -> {
+                    KeyBlocks.set(a.resource(), a.string(0), a.optBool(1, true));
+                    return null;
+                });
+        host.onStop(resource -> {
+            remove(b -> b.resource().equals(resource));
+            KeyBlocks.release(resource);
+        });
     }
 
-    /** Leaving the server: none of its keys stay in the Controls screen. */
+    /** Leaving the server: none of its keys stay in the Controls screen, and nothing stays blocked. */
     void clear() {
         remove(b -> true);
+        KeyBlocks.release(null);
     }
 
     private void remove(java.util.function.Predicate<Bind> which) {
@@ -129,11 +139,24 @@ final class ClientKeys {
         KeyMapping.resetMapping();
     }
 
-    /** Every client tick: presses with no screen open go to the resource; once a second, what the player rebound is saved. */
+    /** Binds whose press went to the resource and whose key is still down: they owe an action_release. */
+    private final java.util.Set<Bind> held = new java.util.HashSet<>();
+
+    /**
+     * Every client tick: presses with no screen open go to the resource, and so does letting go of a key whose press
+     * went (screen or not, so nothing stays stuck "held"); once a second, what the player rebound is saved.
+     */
     void tick() {
         boolean free = ClientCompat.screen() == null && Minecraft.getInstance().player != null;
-        for (Bind b : List.copyOf(binds))
-            while (b.mapping().consumeClick()) if (free) modules.emitTo(b.resource(), keys, "action", b.id());
+        for (Bind b : List.copyOf(binds)) {
+            while (b.mapping().consumeClick()) {
+                if (!free) continue;
+                held.add(b);
+                modules.emitTo(b.resource(), keys, "action", b.id());
+            }
+            if (!b.mapping().isDown() && held.remove(b)) modules.emitTo(b.resource(), keys, "action_release", b.id());
+        }
+        held.retainAll(binds);
         if (++ticks % 20 == 0 && !binds.isEmpty()) remember();
     }
 

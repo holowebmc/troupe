@@ -212,12 +212,15 @@ class GameApiTest {
     @Test
     void keysBindListensToPresses() throws Exception {
         ResourceHost host = new ResourceHost(Side.CLIENT, Runnable::run);
-        Module keys = host.modules().global("keys").function("watch", a -> log.add("watch " + a.string(0))).event("press");
+        Module keys = host.modules().global("keys").function("watch", a -> log.add("watch " + a.string(0))).event("press").event("release");
         host.modules().module("probe").function("see", a -> log.add(a.string(0)));
-        start(host, "client", "keys.bind('b', function() mods.call('probe', 'see', 'b pressed') end)");
+        start(host, "client", "keys.bind('b', function() mods.call('probe', 'see', 'b pressed') end, "
+                + "function() mods.call('probe', 'see', 'b released') end)");
         keys.emit("press", "x");
         keys.emit("press", "b");
-        assertEquals(List.of("watch b", "b pressed"), log);
+        keys.emit("release", "x");
+        keys.emit("release", "b");
+        assertEquals(List.of("watch b", "b pressed", "b released"), log);
     }
 
     @Test

@@ -67,7 +67,7 @@ final class ClientApi {
             return null;
         });
 
-        // keys.bind(key, fn) is in the prelude: it calls watch(key) and listens to "press".
+        // keys.bind(key, fn, release) is in the prelude: it calls watch(key) and listens to "press" and "release".
         keyModule = modules.global("keys")
                 .function("watch", a -> {
                     String name = a.string(0);
@@ -76,15 +76,27 @@ final class ClientApi {
                     keys.put(name, key.getValue());
                     return null;
                 })
-                .event("press");
+                .event("press")
+                .event("release");
     }
 
-    /** Every client tick: a watched key that went down, with no screen open, is a press. */
+    /** Watched keys whose press went to the scripts and that are still down: they owe a release. */
+    private final java.util.Set<String> pressed = new java.util.HashSet<>();
+
+    /**
+     * Every client tick: a watched key that went down, with no screen open, is a press; letting go of a pressed key is
+     * a release, screen or not, so a script that shows something while a key is held always hears the end.
+     */
     void tick() {
         boolean free = ClientCompat.screen() == null && Minecraft.getInstance().player != null;
         keys.forEach((name, code) -> {
             boolean now = ClientCompat.keyDown(code);
-            if (now && !down.getOrDefault(name, false) && free) keyModule.emit("press", name);
+            if (now && !down.getOrDefault(name, false) && free) {
+                pressed.add(name);
+                keyModule.emit("press", name);
+            } else if (!now && pressed.remove(name)) {
+                keyModule.emit("release", name);
+            }
             down.put(name, now);
         });
     }

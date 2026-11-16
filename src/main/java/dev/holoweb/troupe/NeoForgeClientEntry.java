@@ -33,6 +33,11 @@ public final class NeoForgeClientEntry {
                 (gui, delta) -> TroupeClient.hud().draw(gui)));
 
         IEventBus bus = NeoForge.EVENT_BUS;
+        // hud.native(false): first in line, so a mod that draws in its own listener for a vanilla layer (TaCZ's crosshair) doesn't run either.
+        ClientHud.layersHideable = true;
+        bus.addListener(net.neoforged.bus.api.EventPriority.HIGHEST, (net.neoforged.neoforge.client.event.RenderGuiLayerEvent.Pre e) -> {
+            if (TroupeClient.hud().hides(e.getName())) e.setCanceled(true);
+        });
         // The login packet: the first one of play, handled on the render thread before ours.
         bus.addListener((ClientPlayerNetworkEvent.LoggingIn e) ->
                 TroupeClient.playStarted(m -> PacketDistributor.sendToServer(new TroupePayload(m)), e.getConnection()));

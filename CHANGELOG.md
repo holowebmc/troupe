@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `hud.native(false, keep?)` hides the game's HUD and other mods' HUD layers (keeping the ones listed), for servers that draw their whole interface with Troupe and Vitrine. NeoForge only for now.
+- Key releases: `keys.bind(key, fn, release)` and `keys.register(id, opts, fn, release)` also run a function when the key is let go, so a script can show something only while a key is held. Also `keys.on_release` and `keys.on_action_release`.
+- `keys.block(name)` turns off one of the game's or a mod's key mappings (the inventory, swapping hands, a mod's action) while the resource runs.
+- `player.skip_empty_slots(true)`: the hotbar selection skips empty slots, so the hand is never empty while there's something to hold.
+
 ## 0.2.0
 
 - NeoForge 1.21.1 (alpha): a separate jar, `troupe-0.2.0+1.21.1-neoforge.jar`, for NeoForge 21.1 (any build). Same resources, Lua API and protocol as the Fabric jars. On NeoForge, permission nodes fall back to the op level, and mods register their Troupe modules as a `META-INF/services` entry.

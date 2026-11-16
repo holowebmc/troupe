@@ -84,6 +84,7 @@ public final class TroupeClient {
     static void tick(Minecraft client) {
         api.tick();
         keys.tick();
+        hud.tickHotbar();
         interact.tick(client);
         host.tick();
         askAboutWorld(client);
